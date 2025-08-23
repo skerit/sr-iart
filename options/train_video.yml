@@ -87,15 +87,13 @@ train:
   perceptual_opt:
     type: PerceptualLoss
     layer_weights:
-      'conv3_4': 0.5
-      'conv4_4': 1.0
-      'conv5_4': 2.0
+      'conv5_4': 1  
     vgg_type: vgg19
     use_input_norm: true
     range_norm: false
-    perceptual_weight: 0.1
+    perceptual_weight: 0.05  # Lower weight for fine-tuning
     style_weight: 0
-    criterion: huber
+    criterion: l1  # Use L1 instead of cb
 
 # validation settings  
 val:
