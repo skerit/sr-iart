@@ -25,6 +25,9 @@ datasets:
 
     num_frame: 16  # Number of frames per sequence
     gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
+    # For multi-scale training (optional):
+    # patch_sizes: [256, 384, 512]  # Multiple patch sizes
+    # patch_probs: [0.6, 0.3, 0.1]   # Probability of each size
     interval_list: [1]
     random_reverse: false
     use_hflip: false  # Disable flip to avoid dimension issues
@@ -140,7 +143,7 @@ logger:
   save_checkpoint_freq: !!float 100  # Save checkpoint every 100 iterations (more frequent for testing)
   use_tb_logger: true
   wandb:
-    project: ~
+    project: srvideo-dvd-bluray
     resume_id: ~
 
 # dist training settings
