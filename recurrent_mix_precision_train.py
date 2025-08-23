@@ -8,6 +8,7 @@ from torch.cuda.amp import GradScaler
 
 import archs  # noqa F401
 import models  # noqa F401
+import data  # noqa F401 - Import custom datasets
 from basicsr.data import build_dataloader, build_dataset
 from basicsr.data.data_sampler import EnlargedSampler
 from basicsr.data.prefetch_dataloader import CPUPrefetcher, CUDAPrefetcher
@@ -181,8 +182,14 @@ def train_pipeline(root_path):
             # update learning rate
             model.update_learning_rate(current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))
             # training
-            model.feed_data(train_data)
-            model.optimize_parameters(scaler, current_iter)
+            try:
+                model.feed_data(train_data)
+                model.optimize_parameters(scaler, current_iter)
+            except Exception as e:
+                logger.error(f'ERROR at iteration {current_iter}: {str(e)}')
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
             iter_timer.record()
             if current_iter == 1:
                 # reset start time in msg_logger for more accurate eta_time

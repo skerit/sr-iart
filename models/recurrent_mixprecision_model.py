@@ -127,7 +127,13 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 loss_dict['l_pix'] = l_pix
             # perceptual loss
             if self.cri_perceptual:
-                l_percep, l_style = self.cri_perceptual(self.output, self.gt)
+                # Reshape 5D video tensors to 4D for perceptual loss
+                # self.output shape: [B, T, C, H, W] -> [B*T, C, H, W]
+                b, t, c, h, w = self.output.shape
+                output_4d = self.output.view(b * t, c, h, w)
+                gt_4d = self.gt.view(b * t, c, h, w)
+                
+                l_percep, l_style = self.cri_perceptual(output_4d, gt_4d)
                 if l_percep is not None:
                     l_total += l_percep
                     loss_dict['l_percep'] = l_percep

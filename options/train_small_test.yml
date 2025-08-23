@@ -1,0 +1,150 @@
+# Small dataset test configuration for IART
+# Based on IART_REDS_N16_600K.yml but adapted for 571 frames
+
+# general settings
+name: IART_small_test_571frames
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1  # Using single GPU
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: CustomDataset
+    type: REDSRecurrentDataset
+    dataroot_gt: /home/skerit/projects/srvideo/dataset/train_gt  # Path to your GT frames
+    dataroot_lq: /home/skerit/projects/srvideo/dataset/train_lq  # Path to your LQ frames
+    meta_info_file: /home/skerit/projects/srvideo/dataset/meta_info_train.txt
+    val_partition: ~  # No validation partition for now
+    test_mode: False
+    io_backend:
+      type: disk  # Using disk instead of lmdb for simplicity
+
+    num_frame: 16  # Number of frames per sequence
+    gt_size: 256   # Patch size for training
+    interval_list: [1]
+    random_reverse: false
+    use_hflip: true  # Horizontal flip augmentation
+    use_rot: true    # Rotation augmentation
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4
+    batch_size_per_gpu: 1  # Keep at 1 for 12GB VRAM
+    dataset_enlarge_ratio: 10  # Repeat dataset 10x per epoch for more iterations
+    prefetch_mode: ~
+
+  # Skip validation for initial test
+  val:
+    name: CustomVal
+    type: VideoRecurrentTestDataset
+    dataroot_gt: /home/skerit/projects/srvideo/dataset/train_gt  # Using same as train for quick test
+    dataroot_lq: /home/skerit/projects/srvideo/dataset/train_lq
+    
+    cache_data: false
+    io_backend:
+      type: disk
+    
+    num_frame: -1
+
+# network structures
+network_g:
+  type: IART
+  scale: 4
+  in_ch: 3
+  base_ch: 48
+  rec_ch: 64
+  n_IRB: 11
+  res_ch: 192
+  n_TRB: 8
+  tem_dim: 512
+  n_feat: 288
+  n_resblocks: 6
+  activation: 'gelu'
+  use_fftloss: true
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_600K.pth  # Use pretrained model
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: Adam
+    lr: !!float 1e-5  # Lower learning rate for fine-tuning
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [10000]  # Shorter period for small dataset
+    restart_weights: [1]
+    eta_min: !!float 1e-7
+
+  total_iter: 10000  # Much shorter for initial test (vs 600000 original)
+  use_grad_clip: true
+  set_DINO_OOM: true
+  half_precision: true  # Mixed precision training
+
+  warmup_iter: -1  # No warmup
+
+  # losses
+  pixel_opt:
+    type: CB_FMSE_Loss
+    loss_weight: 1.0
+    reduction: mean
+    toY: true
+    combined_loss: false
+  
+  fft_opt:
+    type: fftloss
+    loss_weight: 0.1
+    
+  # No perceptual loss for initial test to save memory
+  # perceptual_opt:
+  #   type: PerceptualLoss
+  #   layer_weights:
+  #     'conv5_4': 1  
+  #   vgg_type: vgg19
+  #   use_input_norm: true
+  #   range_norm: false
+  #   perceptual_weight: 0.1
+  #   style_weight: 0
+  #   criterion: cb
+
+# validation settings
+val:
+  val_freq: !!float 1000  # Validate every 1000 iterations
+  save_img: true
+  grids: true
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim  
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 1000  # Save checkpoint every 1000 iterations
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
