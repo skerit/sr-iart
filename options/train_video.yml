@@ -1,47 +1,61 @@
-# Video-based training configuration
-name: dvd_bluray_video
-model_type: RecurrentMixPrecisionModel
-num_gpu: 1
-manual_seed: 1234
+# IART training configuration for DVD→Blu-ray restoration (Video Dataset)
+# Fine-tuning from REDS BI N16 pretrained model
 
+# general settings
+name: IART_DVD_Bluray_video
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
 datasets:
   train:
-    name: DVDBlurayVideo
+    name: DVDBlurayVideoDataset
     type: VideoRecurrentDataset
     dataroot_gt: datasets/dvd_bluray/gt  # Directory with GT video files
     dataroot_lq: datasets/dvd_bluray/lq  # Directory with LQ video files
     meta_info_file: datasets/dvd_bluray/video_metadata.json  # Metadata file created by prepare_dataset.py
-    
-    num_frame: 5
-    gt_size: 256
+    val_partition: REDS4  # Use REDS4 partition (will be ignored for custom data)
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16  # Number of frames per sequence
+    gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
     interval_list: [1]
     random_reverse: false
-    use_hflip: true
-    use_rot: true
-    
-    # loader
-    num_worker_per_gpu: 4
-    batch_size_per_gpu: 1
-    dataset_enlarge_ratio: 1
-    prefetch_mode: ~
+    use_hflip: false  # Disable flip to avoid dimension issues
+    use_rot: false    # Disable rotation to avoid dimension issues
 
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 0  # Use 0 workers to simplify debugging
+    batch_size_per_gpu: 1  # Batch size 1 to avoid dimension issues
+    dataset_enlarge_ratio: 1  # Reduce for faster startup
+    prefetch_mode: ~
+    pin_memory: false  # Disable pinned memory
+
+# network structures
 network_g:
-  type: PSRT_sliding
-  upscale: 4
-  clip_size: 2
-  img_size: [2, 64, 64]
-  window_size: [2, 8, 8]
-  img_range: 1.
-  depths: [6, 6, 6, 6, 6, 6]
-  embed_dim: 180
-  num_heads: [6, 6, 6, 6, 6, 6]
-  mlp_ratio: 2
-  upsampler: 'pixelshuffle'
-  resi_connection: '1conv'
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16  # Must match the pretrained model (N16)
+  img_size: 64
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
 
 # path
 path:
-  pretrain_network_g: ~
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
   strict_load_g: true
   resume_state: ~
 
@@ -50,16 +64,17 @@ train:
   ema_decay: 0.999
   optim_g:
     type: Adam
-    lr: !!float 2e-4
+    lr: !!float 2e-5  # Slightly higher LR with more data
     weight_decay: 0
     betas: [0.9, 0.99]
 
   scheduler:
-    type: MultiStepLR
-    milestones: [150000, 250000, 350000, 450000]
-    gamma: 0.5
+    type: CosineAnnealingRestartLR
+    periods: [50000]  # Longer period with more data
+    restart_weights: [1]
+    eta_min: !!float 1e-7
 
-  total_iter: 500000
+  total_iter: 50000  # Total training iterations with all data
   warmup_iter: -1  # no warm up
 
   # losses
@@ -91,22 +106,22 @@ val:
     psnr:
       type: calculate_psnr
       crop_border: 0
-      test_y_channel: true
+      test_y_channel: false
       better: higher
     ssim:
       type: calculate_ssim
       crop_border: 0
-      test_y_channel: true
+      test_y_channel: false
       better: higher
 
 # logging settings
 logger:
   print_freq: 100
-  save_checkpoint_freq: 100  # Save frequently
+  save_checkpoint_freq: 100  # Save frequently for video dataset
   use_tb_logger: true
   wandb:
     project: srvideo-dvd-bluray
-    resume_id: ~
+    resume_id: srvideo-dvd-bluray
 
 # dist training settings
 dist_params:
