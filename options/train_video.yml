@@ -32,11 +32,11 @@ datasets:
 
     # data loader
     use_shuffle: true
-    num_worker_per_gpu: 0  # Use 0 workers to simplify debugging
+    num_worker_per_gpu: 4  # Use multiple workers for parallel video loading
     batch_size_per_gpu: 1  # Batch size 1 to avoid dimension issues
-    dataset_enlarge_ratio: 1  # Reduce for faster startup
-    prefetch_mode: ~
-    pin_memory: false  # Disable pinned memory
+    dataset_enlarge_ratio: 10  # Cache more samples in memory
+    prefetch_mode: 'cuda'  # Prefetch to GPU while processing
+    pin_memory: true  # Enable pinned memory for faster GPU transfer
 
 # network structures
 network_g:
