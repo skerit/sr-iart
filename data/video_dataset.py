@@ -79,18 +79,45 @@ class VideoRecurrentDataset(data.Dataset):
         clip = self.clips[clip_idx]
         
         # Open video files
-        gt_cap = cv2.VideoCapture(os.path.join(self.gt_root, clip['gt_video']))
-        lq_cap = cv2.VideoCapture(os.path.join(self.lq_root, clip['lq_video']))
+        gt_path = os.path.join(self.gt_root, clip['gt_video'])
+        lq_path = os.path.join(self.lq_root, clip['lq_video'])
+        
+        gt_cap = cv2.VideoCapture(gt_path)
+        if not gt_cap.isOpened():
+            logger = get_root_logger()
+            logger.error(f"Failed to open GT video: {gt_path}")
+            raise RuntimeError(f"Cannot open video: {gt_path}")
+            
+        lq_cap = cv2.VideoCapture(lq_path)
+        if not lq_cap.isOpened():
+            gt_cap.release()
+            logger = get_root_logger()
+            logger.error(f"Failed to open LQ video: {lq_path}")
+            raise RuntimeError(f"Cannot open video: {lq_path}")
         
         # Get frame count and ensure we don't go out of bounds
         frame_count = clip['frame_count']
-        max_start = max(1, frame_count - self.num_frame - max(self.interval_list))
         
-        # Random start frame
-        start_frame = np.random.randint(0, max_start)
-        
-        # Random interval
+        # Random interval first so we know the span
         interval = np.random.choice(self.interval_list)
+        
+        # Calculate how many frames we need
+        frames_needed = (self.num_frame - 1) * interval + 1
+        
+        # Ensure we have enough frames
+        if frame_count < frames_needed:
+            # Not enough frames, use interval 1 and start at 0
+            interval = 1
+            start_frame = 0
+            if frame_count < self.num_frame:
+                # Still not enough frames - this clip is too short
+                logger = get_root_logger()
+                logger.warning(f"Clip {clip['name']} has only {frame_count} frames, need {self.num_frame}")
+                start_frame = 0
+        else:
+            # Calculate valid range for start frame
+            max_start = frame_count - frames_needed + 1
+            start_frame = np.random.randint(0, max(1, max_start))
         
         # Get first frame to determine dimensions
         gt_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
