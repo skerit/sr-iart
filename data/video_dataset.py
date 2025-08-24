@@ -1,5 +1,6 @@
 """Video-based dataset that reads directly from video files instead of image sequences."""
 
+import os
 import cv2
 import numpy as np
 import torch
@@ -26,6 +27,7 @@ class VideoRecurrentDataset(data.Dataset):
         
         self.num_frame = opt.get('num_frame', 5)
         self.num_half_frames = opt.get('num_half_frames', 2)
+        self.gt_size = opt.get('gt_size', None)  # Patch size for training
         
         # Video-specific options
         self.meta_info_file = opt.get('meta_info_file', None)
