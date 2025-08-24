@@ -75,8 +75,14 @@ class VideoRecurrentDataset(data.Dataset):
                 - gt: Ground truth frames tensor
                 - key: Sample identifier
         """
+        import time
+        start_time = time.time()
+        
         clip_idx = index % len(self.clips)
         clip = self.clips[clip_idx]
+        
+        logger = get_root_logger()
+        logger.debug(f"Loading clip {clip['name']} (index {index}, clip_idx {clip_idx})")
         
         # Open video files
         gt_path = os.path.join(self.gt_root, clip['gt_video'])
@@ -219,6 +225,10 @@ class VideoRecurrentDataset(data.Dataset):
         # Convert to tensor (T, C, H, W)
         img_gts = torch.from_numpy(img_gts).float().permute(0, 3, 1, 2) / 255.0
         img_lqs = torch.from_numpy(img_lqs).float().permute(0, 3, 1, 2) / 255.0
+        
+        load_time = time.time() - start_time
+        if load_time > 1.0:  # Log if loading takes more than 1 second
+            logger.info(f"Loaded clip {clip['name']} in {load_time:.2f}s (shapes: GT={img_gts.shape}, LQ={img_lqs.shape})")
         
         return {
             'lq': img_lqs,
