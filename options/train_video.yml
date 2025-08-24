@@ -122,8 +122,8 @@ logger:
   save_checkpoint_freq: 100  # Save frequently for video dataset
   use_tb_logger: true
   wandb:
-    project: ~
-    resume_id: ~
+    project: srvideo-dvd-bluray
+    resume_id: srvideo-dvd-bluray
 
 # dist training settings
 dist_params:
