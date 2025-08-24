@@ -141,6 +141,15 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     l_total += l_style
                     loss_dict['l_style'] = l_style
             scaler.scale(l_total).backward()
+            
+            # Gradient clipping to prevent NaN
+            if self.opt['train'].get('use_grad_clip', False):
+                # Unscale gradients before clipping
+                scaler.unscale_(self.optimizer_g)
+                # Clip gradients - default to 0.5 if not specified
+                max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
+                torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
+            
             scaler.step(self.optimizer_g)
             scaler.update()
 
