@@ -92,7 +92,42 @@ class VideoRecurrentDataset(data.Dataset):
         # Random interval
         interval = np.random.choice(self.interval_list)
         
-        # Read frames
+        # Get first frame to determine dimensions
+        gt_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        ret, first_gt = gt_cap.read()
+        if ret:
+            first_gt = cv2.cvtColor(first_gt, cv2.COLOR_BGR2RGB)
+            gt_h, gt_w = first_gt.shape[:2]
+        else:
+            gt_h, gt_w = 720, 1280  # Default dimensions
+            
+        lq_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        ret, first_lq = lq_cap.read()
+        if ret:
+            first_lq = cv2.cvtColor(first_lq, cv2.COLOR_BGR2RGB)
+            lq_h, lq_w = first_lq.shape[:2]
+        else:
+            lq_h, lq_w = gt_h // 4, gt_w // 4  # Assume 4x scale
+        
+        # Calculate random crop position (same for all frames)
+        if self.gt_size is not None:
+            # Ensure crop size doesn't exceed frame size
+            gt_size = min(self.gt_size, gt_h, gt_w)
+            lq_size = gt_size // 4  # Assuming 4x scale
+            
+            # Random crop position
+            gt_top = np.random.randint(0, gt_h - gt_size + 1) if gt_h > gt_size else 0
+            gt_left = np.random.randint(0, gt_w - gt_size + 1) if gt_w > gt_size else 0
+            lq_top = gt_top // 4
+            lq_left = gt_left // 4
+        else:
+            # No cropping
+            gt_size = min(gt_h, gt_w)
+            lq_size = min(lq_h, lq_w)
+            gt_top = gt_left = 0
+            lq_top = lq_left = 0
+        
+        # Read and crop frames
         img_gts = []
         img_lqs = []
         
@@ -107,9 +142,11 @@ class VideoRecurrentDataset(data.Dataset):
                 if img_gts:
                     gt_frame = img_gts[-1]
                 else:
-                    gt_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                    gt_frame = np.zeros((gt_size, gt_size, 3), dtype=np.uint8)
             else:
                 gt_frame = cv2.cvtColor(gt_frame, cv2.COLOR_BGR2RGB)
+                # Crop the frame
+                gt_frame = gt_frame[gt_top:gt_top+gt_size, gt_left:gt_left+gt_size]
             
             # Read LQ frame
             lq_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -119,9 +156,11 @@ class VideoRecurrentDataset(data.Dataset):
                 if img_lqs:
                     lq_frame = img_lqs[-1]
                 else:
-                    lq_frame = np.zeros((180, 320, 3), dtype=np.uint8)
+                    lq_frame = np.zeros((lq_size, lq_size, 3), dtype=np.uint8)
             else:
                 lq_frame = cv2.cvtColor(lq_frame, cv2.COLOR_BGR2RGB)
+                # Crop the frame
+                lq_frame = lq_frame[lq_top:lq_top+lq_size, lq_left:lq_left+lq_size]
             
             img_gts.append(gt_frame)
             img_lqs.append(lq_frame)
