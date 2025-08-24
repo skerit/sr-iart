@@ -68,6 +68,7 @@ train:
     lr: !!float 2e-5  # Slightly higher LR with more data
     weight_decay: 0
     betas: [0.9, 0.99]
+    grad_clip: 0.5  # Explicit gradient clipping to prevent explosion
 
   scheduler:
     type: CosineAnnealingRestartLR
@@ -117,12 +118,12 @@ val:
 
 # logging settings
 logger:
-  print_freq: 50
-  save_checkpoint_freq: !!float 100  # Save checkpoint every 100 iterations (more frequent for testing)
+  print_freq: 10  # Print every 10 iterations to see progress
+  save_checkpoint_freq: 100  # Save frequently for video dataset
   use_tb_logger: true
   wandb:
-    project: srvideo-dvd-bluray
-    resume_id: srvideo-dvd-bluray
+    project: ~
+    resume_id: ~
 
 # dist training settings
 dist_params:
