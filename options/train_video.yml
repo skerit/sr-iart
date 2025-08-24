@@ -74,14 +74,16 @@ train:
     restart_weights: [1]
     eta_min: !!float 1e-7
 
-  total_iter: 50000  # Total training iterations with all data
-  warmup_iter: -1  # no warm up
+  total_iter: 50000  # More iterations with larger dataset
+  use_grad_clip: true
+  set_DINO_OOM: true
+  half_precision: true  # Mixed precision training
+  warmup_iter: 100  # Short warmup period
 
   # losses
   pixel_opt:
-    type: CharbonnierLoss
+    type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
     loss_weight: 1.0
-    eps: !!float 1e-9
     reduction: mean
 
   perceptual_opt:
@@ -95,27 +97,27 @@ train:
     style_weight: 0
     criterion: l1  # Use L1 instead of cb
 
-# validation settings  
+# validation settings (disabled for now)
 val:
-  val_freq: !!float 2.5e3
-  save_img: true
+  val_freq: !!float 999999  # Effectively disabled
+  save_img: false
+  grids: false
+  max_minibatch: 8
 
   metrics:
     psnr:
       type: calculate_psnr
       crop_border: 0
       test_y_channel: false
-      better: higher
     ssim:
-      type: calculate_ssim
+      type: calculate_ssim  
       crop_border: 0
       test_y_channel: false
-      better: higher
 
 # logging settings
 logger:
-  print_freq: 100
-  save_checkpoint_freq: 100  # Save frequently for video dataset
+  print_freq: 50
+  save_checkpoint_freq: !!float 100  # Save checkpoint every 100 iterations (more frequent for testing)
   use_tb_logger: true
   wandb:
     project: srvideo-dvd-bluray
