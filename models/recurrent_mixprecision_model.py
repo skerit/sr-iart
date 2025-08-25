@@ -109,9 +109,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         super(RecurrentMixPrecisionRTModel, self).feed_data(data)
 
     def optimize_parameters(self, scaler, current_iter):
+        from basicsr.utils import get_root_logger
+        logger = get_root_logger()
 
         if self.fix_flow_iter:
-            logger = get_root_logger()
             if current_iter == 1:
                 logger.info(f'Fix flow network and feature extractor for {self.fix_flow_iter} iters.')
                 for name, param in self.net_g.named_parameters():
@@ -148,40 +149,101 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 if l_style is not None:
                     l_total += l_style
                     loss_dict['l_style'] = l_style
+        
+        # Check for NaN in loss before backward (outside autocast to save memory)
+        if torch.isnan(l_total) or torch.isinf(l_total):
+            logger.error(f"NaN/Inf loss detected at iteration {current_iter}!")
+            logger.error(f"  Sample key: {self.current_key}")
+            logger.error(f"  l_total: {l_total.item()}")
+            if self.cri_pix:
+                logger.error(f"  l_pix: {l_pix.item() if not torch.isnan(l_pix) else 'NaN'}")
+            if self.cri_perceptual:
+                logger.error(f"  l_percep: {l_percep.item() if l_percep is not None and not torch.isnan(l_percep) else 'NaN/None'}")
+            # Log input/output statistics
+            logger.error(f"  LQ min/max: {self.lq.min().item():.4f}/{self.lq.max().item():.4f}")
+            logger.error(f"  GT min/max: {self.gt.min().item():.4f}/{self.gt.max().item():.4f}")
+            logger.error(f"  Output min/max: {self.output.min().item() if not torch.isnan(self.output).any() else 'nan'}/{self.output.max().item() if not torch.isnan(self.output).any() else 'nan'}")
             
-            # Check for NaN in loss before backward
-            if torch.isnan(l_total) or torch.isinf(l_total):
-                from basicsr.utils import get_root_logger
-                logger = get_root_logger()
-                logger.error(f"NaN/Inf loss detected at iteration {current_iter}!")
-                logger.error(f"  Sample key: {self.current_key}")
-                logger.error(f"  l_total: {l_total.item()}")
-                if self.cri_pix:
-                    logger.error(f"  l_pix: {l_pix.item() if not torch.isnan(l_pix) else 'NaN'}")
-                if self.cri_perceptual:
-                    logger.error(f"  l_percep: {l_percep.item() if l_percep is not None and not torch.isnan(l_percep) else 'NaN/None'}")
-                # Log input/output statistics
-                logger.error(f"  LQ min/max: {self.lq.min().item():.4f}/{self.lq.max().item():.4f}")
-                logger.error(f"  GT min/max: {self.gt.min().item():.4f}/{self.gt.max().item():.4f}")
-                logger.error(f"  Output min/max: {self.output.min().item():.4f}/{self.output.max().item():.4f}")
+            # Check for NaN in model weights (limit checks to avoid OOM)
+            nan_params = []
+            param_count = 0
+            max_params_to_check = 10  # Limit to avoid memory issues
             
-            scaler.scale(l_total).backward()
+            for name, param in self.net_g.named_parameters():
+                if param_count >= max_params_to_check:
+                    break
+                param_count += 1
+                
+                # Check only a sample of the tensor to avoid memory overhead
+                if param.numel() > 0:
+                    # Check if any NaN/Inf in first 100 elements
+                    sample_size = min(100, param.numel())
+                    param_flat = param.view(-1)[:sample_size]
+                    if torch.isnan(param_flat).any() or torch.isinf(param_flat).any():
+                        nan_params.append(f"{name} (weight)")
+                    
+                    if param.grad is not None:
+                        grad_flat = param.grad.view(-1)[:sample_size]
+                        if torch.isnan(grad_flat).any() or torch.isinf(grad_flat).any():
+                            nan_params.append(f"{name} (grad)")
             
-            # Gradient clipping to prevent NaN
-            if self.opt['train'].get('use_grad_clip', False):
-                # Unscale gradients before clipping
-                scaler.unscale_(self.optimizer_g)
-                # Clip gradients - default to 0.5 if not specified
-                max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
-                torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
+            if nan_params:
+                logger.error(f"  NaN/Inf found in parameters: {', '.join(nan_params[:5])}")
             
-            scaler.step(self.optimizer_g)
+            # Clean up to prevent OOM on next iteration
+            self.optimizer_g.zero_grad()
+            
+            # Clear the output tensor to free memory
+            if hasattr(self, 'output'):
+                del self.output
+            
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+            
+            # Skip this iteration - don't backward or step
+            logger.warning(f"  Skipping iteration {current_iter} due to NaN/Inf")
+            return
+        
+        scaler.scale(l_total).backward()
+        
+        # Unscale gradients for checking
+        scaler.unscale_(self.optimizer_g)
+        
+        # Gradient clipping to prevent NaN
+        if self.opt['train'].get('use_grad_clip', False):
+            # Clip gradients - default to 0.5 if not specified
+            max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
+            
+            # Log if gradient norm is very large or was clipped
+            if grad_norm > 100:
+                logger.warning(f"Large gradient norm at iteration {current_iter}: {grad_norm:.2f}")
+            elif grad_norm > max_norm:
+                logger.debug(f"Gradients clipped at iteration {current_iter}: {grad_norm:.2f} -> {max_norm}")
+        else:
+            # Just compute norm for logging
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), float('inf'))
+            if grad_norm > 100:
+                logger.warning(f"Large gradient norm at iteration {current_iter}: {grad_norm:.2f}")
+        
+        # Check for NaN in gradients after clipping
+        has_nan_grad = False
+        for p in self.net_g.parameters():
+            if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
+                has_nan_grad = True
+                break
+        
+        if has_nan_grad:
+            logger.error(f"NaN/Inf in gradients after clipping at iteration {current_iter}! Skipping optimizer step.")
+            # Reset gradients and skip this step
+            self.optimizer_g.zero_grad()
             scaler.update()
-
-            # l_total.backward()
-            # self.optimizer_g.step()
-
-            self.log_dict = self.reduce_loss_dict(loss_dict)
+            return
+        
+        scaler.step(self.optimizer_g)
+        scaler.update()
+        
+        self.log_dict = self.reduce_loss_dict(loss_dict)
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
