@@ -123,28 +123,6 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         from basicsr.utils import get_root_logger
         logger = get_root_logger()
         
-        # Special check at iteration 11700 to see model state before NaN
-        if current_iter == 11700:
-            logger.warning("=== Checking model state at iteration 11700 (before NaN) ===")
-            # Log current learning rate
-            current_lr = self.optimizer_g.param_groups[0]['lr']
-            logger.warning(f"  Current learning rate: {current_lr:.2e}")
-            
-            # Check for any extreme weights
-            max_weight = 0
-            max_weight_name = ""
-            for name, param in self.net_g.named_parameters():
-                if param.numel() > 0:
-                    param_max = param.abs().max().item()
-                    param_mean = param.abs().mean().item()
-                    if param_max > max_weight:
-                        max_weight = param_max
-                        max_weight_name = name
-                    if param_max > 100 or param_mean > 10:
-                        logger.warning(f"  Large weights in {name}: max={param_max:.2f}, mean={param_mean:.4f}")
-            logger.warning(f"  Maximum weight value: {max_weight:.4f} in {max_weight_name}")
-            logger.warning("=== End of iteration 11700 check ===")
-
         if self.fix_flow_iter:
             if current_iter == 1:
                 logger.info(f'Fix flow network and feature extractor for {self.fix_flow_iter} iters.')
