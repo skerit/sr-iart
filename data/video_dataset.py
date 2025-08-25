@@ -222,14 +222,20 @@ class VideoRecurrentDataset(data.Dataset):
         img_gts = torch.from_numpy(img_gts).float().permute(0, 3, 1, 2) / 255.0
         img_lqs = torch.from_numpy(img_lqs).float().permute(0, 3, 1, 2) / 255.0
         
-        # Remove timing code entirely - no need to log this anymore
-        # load_time = time.time() - start_time
+        # Check for NaN/Inf in the data
+        if torch.isnan(img_lqs).any() or torch.isinf(img_lqs).any() or torch.isnan(img_gts).any() or torch.isinf(img_gts).any():
+            logger = get_root_logger()
+            logger.error(f"NaN/Inf in data! Clip: {clip['name']}, frames {start_frame}-{start_frame + (self.num_frame-1) * interval}")
+            logger.error(f"  LQ has NaN: {torch.isnan(img_lqs).any()}, has Inf: {torch.isinf(img_lqs).any()}")
+            logger.error(f"  GT has NaN: {torch.isnan(img_gts).any()}, has Inf: {torch.isinf(img_gts).any()}")
         
-        return {
+        result = {
             'lq': img_lqs,
             'gt': img_gts,
             'key': f"{clip['name']}_{start_frame:08d}"
         }
+        
+        return result
 
     def __len__(self):
         """Dataset length is clips * possible starting positions."""

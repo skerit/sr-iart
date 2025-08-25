@@ -79,7 +79,7 @@ train:
   use_grad_clip: true  # Enable gradient clipping
   grad_clip_norm: 0.1  # More aggressive gradient clipping to prevent NaN
   set_DINO_OOM: true
-  half_precision: true  # Mixed precision training
+  half_precision: false  # Disabled mixed precision to prevent NaN
   warmup_iter: 100  # Short warmup period
 
   # losses

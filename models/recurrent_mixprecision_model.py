@@ -140,6 +140,18 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 if l_style is not None:
                     l_total += l_style
                     loss_dict['l_style'] = l_style
+            
+            # Check for NaN in loss before backward
+            if torch.isnan(l_total) or torch.isinf(l_total):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                logger.error(f"NaN/Inf loss detected at iteration {current_iter}!")
+                logger.error(f"  l_total: {l_total.item()}")
+                if self.cri_pix:
+                    logger.error(f"  l_pix: {l_pix.item() if not torch.isnan(l_pix) else 'NaN'}")
+                if self.cri_perceptual:
+                    logger.error(f"  l_percep: {l_percep.item() if l_percep is not None and not torch.isnan(l_percep) else 'NaN/None'}")
+            
             scaler.scale(l_total).backward()
             
             # Gradient clipping to prevent NaN
