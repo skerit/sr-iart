@@ -209,8 +209,8 @@ class VideoRecurrentDataset(data.Dataset):
         
         # Data augmentation
         if self.use_hflip and np.random.random() < 0.5:
-            img_gts = img_gts[:, :, ::-1]
-            img_lqs = img_lqs[:, :, ::-1]
+            img_gts = img_gts[:, :, ::-1].copy()  # .copy() to avoid negative strides
+            img_lqs = img_lqs[:, :, ::-1].copy()
             
         if self.use_rot and np.random.random() < 0.5:
             # Random rotation (90, 180, or 270 degrees)
