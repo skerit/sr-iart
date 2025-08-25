@@ -204,8 +204,8 @@ class VideoRecurrentDataset(data.Dataset):
         
         # Random reverse
         if self.random_reverse and np.random.random() < 0.5:
-            img_gts = img_gts[::-1]
-            img_lqs = img_lqs[::-1]
+            img_gts = img_gts[::-1].copy()  # .copy() to avoid negative strides
+            img_lqs = img_lqs[::-1].copy()
         
         # Data augmentation
         if self.use_hflip and np.random.random() < 0.5:
