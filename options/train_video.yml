@@ -64,10 +64,10 @@ path:
 train:
   ema_decay: 0.999
   optim_g:
-    type: Adam
-    lr: !!float 1e-5  # Reduced LR to prevent NaN
-    weight_decay: 0
-    betas: [0.9, 0.99]
+    type: AdamW  # More stable than Adam
+    lr: !!float 5e-6  # Lower LR for fine-tuning
+    weight_decay: 0.01  # AdamW works better with small weight decay
+    betas: [0.9, 0.999]  # Standard betas - 0.999 is more stable than 0.99
 
   scheduler:
     type: CosineAnnealingRestartLR
@@ -77,10 +77,11 @@ train:
 
   total_iter: 50000  # More iterations with larger dataset
   use_grad_clip: true  # Enable gradient clipping
-  grad_clip_norm: 0.1  # More aggressive gradient clipping to prevent NaN
+  grad_clip_norm: 1.0  # Standard clipping value - too aggressive clipping can cause issues
+  accumulation_steps: 4  # Accumulate gradients over 4 steps for stability
   set_DINO_OOM: true
   half_precision: false  # Disabled mixed precision to prevent NaN
-  warmup_iter: 100  # Short warmup period
+  warmup_iter: 100  # Longer warmup for stability
 
   # losses
   pixel_opt:

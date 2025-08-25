@@ -19,8 +19,6 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
 
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
-        self.current_key = None  # Track current sample being processed
-        self.nan_count = 0  # Track consecutive NaN iterations
 
         # define network
         self.net_g = build_network(opt['network_g'])
@@ -229,11 +227,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             self.nan_count += 1
             
             # If too many consecutive NaNs, reset optimizer state
-            if self.nan_count >= 5:
+            if self.nan_count >= 3:  # More aggressive - reset after 3 failures
                 logger.error(f"  Too many consecutive NaN iterations ({self.nan_count}). Resetting optimizer state.")
                 # Reset optimizer state (momentum, etc.)
                 self.optimizer_g.state = {}
                 self.nan_count = 0
+                logger.error(f"  Optimizer state cleared. This should help stabilize training.")
             
             # Skip this iteration - don't backward or step
             logger.warning(f"  Skipping iteration {current_iter} due to NaN/Inf (count: {self.nan_count})")
@@ -278,6 +277,17 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         
         if has_nan_grad:
             logger.error(f"NaN/Inf in gradients after clipping at iteration {current_iter}! Skipping optimizer step.")
+            # Track this as a failed iteration
+            self.nan_count += 1
+            
+            # If too many consecutive NaNs, reset optimizer state
+            if self.nan_count >= 3:  # More aggressive - reset after 3 failures
+                logger.error(f"  Too many consecutive failed iterations ({self.nan_count}). Resetting optimizer state.")
+                # Reset optimizer state (momentum, etc.)
+                self.optimizer_g.state = {}
+                self.nan_count = 0
+                logger.error(f"  Optimizer state cleared. This should help stabilize training.")
+                
             # Reset gradients and skip this step
             self.optimizer_g.zero_grad()
             scaler.update()
