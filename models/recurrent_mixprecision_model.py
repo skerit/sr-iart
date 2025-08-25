@@ -20,6 +20,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
         self.current_key = None  # Track current sample being processed
+        self.nan_count = 0  # Track consecutive NaN iterations
 
         # define network
         self.net_g = build_network(opt['network_g'])
@@ -115,13 +116,23 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         # Special check at iteration 11700 to see model state before NaN
         if current_iter == 11700:
             logger.warning("=== Checking model state at iteration 11700 (before NaN) ===")
+            # Log current learning rate
+            current_lr = self.optimizer_g.param_groups[0]['lr']
+            logger.warning(f"  Current learning rate: {current_lr:.2e}")
+            
             # Check for any extreme weights
+            max_weight = 0
+            max_weight_name = ""
             for name, param in self.net_g.named_parameters():
                 if param.numel() > 0:
                     param_max = param.abs().max().item()
                     param_mean = param.abs().mean().item()
+                    if param_max > max_weight:
+                        max_weight = param_max
+                        max_weight_name = name
                     if param_max > 100 or param_mean > 10:
                         logger.warning(f"  Large weights in {name}: max={param_max:.2f}, mean={param_mean:.4f}")
+            logger.warning(f"  Maximum weight value: {max_weight:.4f} in {max_weight_name}")
             logger.warning("=== End of iteration 11700 check ===")
 
         if self.fix_flow_iter:
@@ -161,6 +172,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 if l_style is not None:
                     l_total += l_style
                     loss_dict['l_style'] = l_style
+        
+        # Log loss values periodically to track trends
+        if current_iter % 100 == 0:
+            logger.info(f"Loss at iteration {current_iter}: total={l_total.item():.6f}, pix={l_pix.item() if self.cri_pix else 0:.6f}, percep={l_percep.item() if self.cri_perceptual and l_percep is not None else 0:.6f}")
         
         # Check for NaN in loss before backward (outside autocast to save memory)
         if torch.isnan(l_total) or torch.isinf(l_total):
@@ -210,8 +225,18 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # Clear CUDA cache
             torch.cuda.empty_cache()
             
+            # Track consecutive NaN iterations
+            self.nan_count += 1
+            
+            # If too many consecutive NaNs, reset optimizer state
+            if self.nan_count >= 5:
+                logger.error(f"  Too many consecutive NaN iterations ({self.nan_count}). Resetting optimizer state.")
+                # Reset optimizer state (momentum, etc.)
+                self.optimizer_g.state = {}
+                self.nan_count = 0
+            
             # Skip this iteration - don't backward or step
-            logger.warning(f"  Skipping iteration {current_iter} due to NaN/Inf")
+            logger.warning(f"  Skipping iteration {current_iter} due to NaN/Inf (count: {self.nan_count})")
             return
         
         scaler.scale(l_total).backward()
@@ -226,8 +251,13 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
             
             # Log gradient norm periodically and when it's large
-            if current_iter % 10 == 0 or grad_norm > 10:
-                logger.info(f"Gradient norm at iteration {current_iter}: {grad_norm:.4f}")
+            if current_iter % 10 == 0 or grad_norm > 10 or torch.isinf(grad_norm):
+                if torch.isinf(grad_norm):
+                    logger.info(f"Gradient norm at iteration {current_iter}: inf")
+                elif torch.isnan(grad_norm):
+                    logger.info(f"Gradient norm at iteration {current_iter}: nan")
+                else:
+                    logger.info(f"Gradient norm at iteration {current_iter}: {grad_norm:.4f}")
             
             if grad_norm > 100:
                 logger.warning(f"Large gradient norm at iteration {current_iter}: {grad_norm:.2f}")
@@ -255,6 +285,9 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         
         scaler.step(self.optimizer_g)
         scaler.update()
+        
+        # Reset NaN counter on successful iteration
+        self.nan_count = 0
         
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
