@@ -19,6 +19,8 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
 
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
+        self.current_key = None  # Track current sample being processed
+        self.nan_count = 0  # Track consecutive NaN iterations
 
         # define network
         self.net_g = build_network(opt['network_g'])
