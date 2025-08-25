@@ -35,6 +35,16 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             self.init_training_settings()
             self.fix_flow_iter = opt['train'].get('fix_flow')
 
+    def get_optimizer(self, optim_type, params, lr, **kwargs):
+        """Override to add AdamW support."""
+        if optim_type == 'Adam':
+            optimizer = torch.optim.Adam(params, lr, **kwargs)
+        elif optim_type == 'AdamW':
+            optimizer = torch.optim.AdamW(params, lr, **kwargs)
+        else:
+            raise NotImplementedError(f'optimizer {optim_type} is not supported yet.')
+        return optimizer
+    
     # add use_static_graph
     def model_to_device(self, net):
         """Model to device. It also warps models with DistributedDataParallel
