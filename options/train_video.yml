@@ -24,11 +24,23 @@ datasets:
       type: disk
 
     num_frame: 16  # Number of frames per sequence
-    gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
-    interval_list: [1]
-    random_reverse: false
-    use_hflip: false  # Disable flip to avoid dimension issues
-    use_rot: false    # Disable rotation to avoid dimension issues
+
+    # Patch size for training
+    # 320 uses about 22GB of VRAM
+    # The input will use 80x80 patches (after 4x downscale)
+    gt_size: 320
+
+    # Use random (1, 2 or 3) interval per iteration
+    interval_list: [1, 2, 3]
+
+    # Randomly reverse the clips
+    random_reverse: true
+
+    # Randomly apply horizontal flips
+    use_hflip: true
+
+    # Randomly apply rotations
+    use_rot: true
 
     # data loader
     use_shuffle: true
@@ -123,8 +135,8 @@ logger:
   save_checkpoint_freq: 100  # Save frequently for video dataset
   use_tb_logger: true
   wandb:
-    project: srvideo-dvd-bluray
-    resume_id: srvideo-dvd-bluray
+    project: srvideo-dvd-bluray-3
+    resume_id: srvideo-dvd-bluray-3
 
 # dist training settings
 dist_params:
