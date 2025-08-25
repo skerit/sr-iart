@@ -19,6 +19,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
 
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
+        self.current_key = None  # Track current sample being processed
 
         # define network
         self.net_g = build_network(opt['network_g'])
@@ -99,6 +100,13 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         # adopt DDP
         self.net_g = self.model_to_device(self.net_g)
         self.optimizers.append(self.optimizer_g)
+    
+    def feed_data(self, data):
+        """Override feed_data to track current sample key."""
+        # Store the key if available
+        self.current_key = data.get('key', 'unknown')
+        # Call parent feed_data - this calls SRModel.feed_data through the inheritance chain
+        super(RecurrentMixPrecisionRTModel, self).feed_data(data)
 
     def optimize_parameters(self, scaler, current_iter):
 
@@ -146,11 +154,16 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 from basicsr.utils import get_root_logger
                 logger = get_root_logger()
                 logger.error(f"NaN/Inf loss detected at iteration {current_iter}!")
+                logger.error(f"  Sample key: {self.current_key}")
                 logger.error(f"  l_total: {l_total.item()}")
                 if self.cri_pix:
                     logger.error(f"  l_pix: {l_pix.item() if not torch.isnan(l_pix) else 'NaN'}")
                 if self.cri_perceptual:
                     logger.error(f"  l_percep: {l_percep.item() if l_percep is not None and not torch.isnan(l_percep) else 'NaN/None'}")
+                # Log input/output statistics
+                logger.error(f"  LQ min/max: {self.lq.min().item():.4f}/{self.lq.max().item():.4f}")
+                logger.error(f"  GT min/max: {self.gt.min().item():.4f}/{self.gt.max().item():.4f}")
+                logger.error(f"  Output min/max: {self.output.min().item():.4f}/{self.output.max().item():.4f}")
             
             scaler.scale(l_total).backward()
             
