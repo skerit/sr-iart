@@ -111,6 +111,18 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
     def optimize_parameters(self, scaler, current_iter):
         from basicsr.utils import get_root_logger
         logger = get_root_logger()
+        
+        # Special check at iteration 11700 to see model state before NaN
+        if current_iter == 11700:
+            logger.warning("=== Checking model state at iteration 11700 (before NaN) ===")
+            # Check for any extreme weights
+            for name, param in self.net_g.named_parameters():
+                if param.numel() > 0:
+                    param_max = param.abs().max().item()
+                    param_mean = param.abs().mean().item()
+                    if param_max > 100 or param_mean > 10:
+                        logger.warning(f"  Large weights in {name}: max={param_max:.2f}, mean={param_mean:.4f}")
+            logger.warning("=== End of iteration 11700 check ===")
 
         if self.fix_flow_iter:
             if current_iter == 1:
@@ -164,31 +176,29 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             logger.error(f"  GT min/max: {self.gt.min().item():.4f}/{self.gt.max().item():.4f}")
             logger.error(f"  Output min/max: {self.output.min().item() if not torch.isnan(self.output).any() else 'nan'}/{self.output.max().item() if not torch.isnan(self.output).any() else 'nan'}")
             
-            # Check for NaN in model weights (limit checks to avoid OOM)
-            nan_params = []
-            param_count = 0
-            max_params_to_check = 10  # Limit to avoid memory issues
+            # Check for NaN in model weights - check ALL to find the problem
+            nan_weights = []
+            nan_grads = []
             
             for name, param in self.net_g.named_parameters():
-                if param_count >= max_params_to_check:
-                    break
-                param_count += 1
-                
-                # Check only a sample of the tensor to avoid memory overhead
                 if param.numel() > 0:
-                    # Check if any NaN/Inf in first 100 elements
-                    sample_size = min(100, param.numel())
-                    param_flat = param.view(-1)[:sample_size]
-                    if torch.isnan(param_flat).any() or torch.isinf(param_flat).any():
-                        nan_params.append(f"{name} (weight)")
+                    # Check weights
+                    if torch.isnan(param).any() or torch.isinf(param).any():
+                        nan_weights.append(name)
+                        # Only log first 3 to avoid spam
+                        if len(nan_weights) <= 3:
+                            logger.error(f"  NaN/Inf in weight: {name}")
                     
-                    if param.grad is not None:
-                        grad_flat = param.grad.view(-1)[:sample_size]
-                        if torch.isnan(grad_flat).any() or torch.isinf(grad_flat).any():
-                            nan_params.append(f"{name} (grad)")
+                    # Check gradients if they exist
+                    if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                        nan_grads.append(name)
+                        if len(nan_grads) <= 3:
+                            logger.error(f"  NaN/Inf in gradient: {name}")
             
-            if nan_params:
-                logger.error(f"  NaN/Inf found in parameters: {', '.join(nan_params[:5])}")
+            if nan_weights:
+                logger.error(f"  Total NaN weights: {len(nan_weights)} parameters")
+            if nan_grads:
+                logger.error(f"  Total NaN gradients: {len(nan_grads)} parameters")
             
             # Clean up to prevent OOM on next iteration
             self.optimizer_g.zero_grad()
@@ -215,7 +225,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
             grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
             
-            # Log if gradient norm is very large or was clipped
+            # Log gradient norm periodically and when it's large
+            if current_iter % 10 == 0 or grad_norm > 10:
+                logger.info(f"Gradient norm at iteration {current_iter}: {grad_norm:.4f}")
+            
             if grad_norm > 100:
                 logger.warning(f"Large gradient norm at iteration {current_iter}: {grad_norm:.2f}")
             elif grad_norm > max_norm:
