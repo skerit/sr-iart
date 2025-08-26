@@ -4,7 +4,7 @@ import math
 import time
 import torch
 from os import path as osp
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 import archs  # noqa F401
 import models  # noqa F401
@@ -153,7 +153,7 @@ def train_pipeline(root_path):
         raise ValueError(f'Wrong prefetch_mode {prefetch_mode}.' "Supported ones are: None, 'cuda', 'cpu'.")
 
     # Creates a GradScaler once at the beginning of training.
-    scaler = GradScaler()
+    scaler = GradScaler('cuda')
 
     # sanity checking for validation
     logger.info(f'Sanity checking for validation.')
