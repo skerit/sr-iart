@@ -163,12 +163,18 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             if torch.isnan(self.output).any():
                 logger = get_root_logger()
                 logger.error(f"CRITICAL: Model forward pass produced NaN! Model weights may be corrupted.")
-                # Check if model parameters have NaN
+                # Check if model parameters have NaN (only check first few to avoid OOM)
+                param_checked = 0
                 for name, param in self.net_g.named_parameters():
+                    if param_checked > 5:  # Only check first 5 parameters
+                        break
                     if torch.isnan(param).any():
                         logger.error(f"  NaN found in parameter: {name}")
                         break
-                # Skip iteration and potentially need to restore from checkpoint
+                    param_checked += 1
+                # Clean up to prevent OOM
+                del self.output
+                torch.cuda.empty_cache()
                 self.optimizer_g.zero_grad()
                 return
             
@@ -179,8 +185,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # Check if model is outputting black/invalid/NaN frames
             if torch.isnan(self.output).any():
                 logger = get_root_logger()
-                logger.warning(f"Model outputting NaN! Skipping iteration.")
-                # Skip this iteration to prevent NaN propagation
+                logger.warning(f"Model outputting NaN after clamp! Skipping iteration.")
+                # Clean up and skip
+                del self.output
+                torch.cuda.empty_cache()
                 self.optimizer_g.zero_grad()
                 return
             
@@ -188,7 +196,9 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             if output_mean < 0.001:
                 logger = get_root_logger()
                 logger.warning(f"Model outputting near-black frames! Mean: {output_mean:.6f}")
-                # Skip this iteration to prevent NaN propagation
+                # Clean up and skip
+                del self.output
+                torch.cuda.empty_cache()
                 self.optimizer_g.zero_grad()
                 return
             
