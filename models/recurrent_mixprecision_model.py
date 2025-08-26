@@ -38,6 +38,27 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         if self.is_train:
             self.init_training_settings()
             self.fix_flow_iter = opt['train'].get('fix_flow')
+            
+            # Initialize FFT loss if configured
+            train_opt = self.opt['train']
+            if train_opt.get('fft_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom FFT loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.fft_loss import FFTLoss
+                
+                fft_opt = train_opt['fft_opt']
+                self.cri_fft = FFTLoss(
+                    loss_weight=fft_opt.get('loss_weight', 1.0),
+                    reduction=fft_opt.get('reduction', 'mean')
+                ).to(self.device)
+                logger.info(f"FFT Loss initialized with weight {fft_opt.get('loss_weight', 1.0)}")
+            else:
+                self.cri_fft = None
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
@@ -159,6 +180,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 if l_style is not None:
                     l_total += l_style
                     loss_dict['l_style'] = l_style
+            
+            # FFT loss for preserving high-frequency details
+            if hasattr(self, 'cri_fft') and self.cri_fft:
+                l_fft = self.cri_fft(self.output, self.gt)
+                l_total += l_fft
+                loss_dict['l_fft'] = l_fft
             scaler.scale(l_total).backward()
             
             # Gradient clipping to prevent NaN
