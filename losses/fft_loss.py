@@ -38,9 +38,15 @@ class FFTLoss(nn.Module):
             pred = pred.view(b * t, c, h, w)
             target = target.view(b * t, c, h, w)
         
+        # Convert to float32 for FFT computation (required for non-power-of-2 sizes in mixed precision)
+        # Store original dtype to convert back
+        orig_dtype = pred.dtype
+        pred_float = pred.float()
+        target_float = target.float()
+        
         # Apply 2D FFT
-        pred_fft = torch.fft.rfft2(pred, norm='ortho')
-        target_fft = torch.fft.rfft2(target, norm='ortho')
+        pred_fft = torch.fft.rfft2(pred_float, norm='ortho')
+        target_fft = torch.fft.rfft2(target_float, norm='ortho')
         
         # Calculate loss on both magnitude and phase
         # Magnitude captures frequency content
@@ -61,5 +67,8 @@ class FFTLoss(nn.Module):
             loss = loss.mean()
         elif self.reduction == 'sum':
             loss = loss.sum()
+        
+        # Convert back to original dtype if needed
+        loss = loss.type(orig_dtype)
         
         return loss * self.loss_weight
