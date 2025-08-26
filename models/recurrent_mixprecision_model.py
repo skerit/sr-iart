@@ -21,12 +21,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
         self.current_data = None  # Store current batch data for logging
-    
-    def feed_data(self, data):
-        """Override feed_data to store current batch info for logging."""
-        self.current_data = data  # Store the full data dict
-        super(RecurrentMixPrecisionRTModel, self).feed_data(data)
-
+        
         # define network
         self.net_g = build_network(opt['network_g'])
         self.net_g = self.net_g.to(self.device)
@@ -41,6 +36,11 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         if self.is_train:
             self.init_training_settings()
             self.fix_flow_iter = opt['train'].get('fix_flow')
+    
+    def feed_data(self, data):
+        """Override feed_data to store current batch info for logging."""
+        self.current_data = data  # Store the full data dict
+        super(RecurrentMixPrecisionRTModel, self).feed_data(data)
 
     def get_optimizer(self, optim_type, params, lr, **kwargs):
         """Override to add AdamW support."""
