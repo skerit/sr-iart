@@ -193,13 +193,30 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     coords = data.get('crop_coords', {})
                     interval = data.get('interval', 1)
                     
+                    # Extract actual values from tensors
+                    if torch.is_tensor(key):
+                        key = key.item() if key.numel() == 1 else key.tolist()
+                    if torch.is_tensor(interval):
+                        interval = interval.item() if interval.numel() == 1 else interval.tolist()
+                    
+                    # Extract crop coordinates
+                    gt_top = coords.get('gt_top', 0)
+                    gt_left = coords.get('gt_left', 0)
+                    gt_size = coords.get('gt_size', 0)
+                    if torch.is_tensor(gt_top):
+                        gt_top = gt_top.item() if gt_top.numel() == 1 else gt_top.tolist()
+                    if torch.is_tensor(gt_left):
+                        gt_left = gt_left.item() if gt_left.numel() == 1 else gt_left.tolist()
+                    if torch.is_tensor(gt_size):
+                        gt_size = gt_size.item() if gt_size.numel() == 1 else gt_size.tolist()
+                    
                     # Format losses for logging
                     loss_str = ', '.join([f"{k}: {v:.4f}" if not (torch.isnan(v) if torch.is_tensor(v) else math.isnan(v)) 
                                         else f"{k}: NaN" for k, v in loss_dict.items()])
                     
                     severity = "NaN DETECTED" if has_nan else "HIGH LOSS"
-                    logger.warning(f"[{severity}] Sample: {key} | Crop: ({coords.get('gt_top', 0)}, {coords.get('gt_left', 0)}, "
-                              f"{coords.get('gt_size', 0)}) | Interval: {interval} | Losses: {loss_str}")
+                    logger.warning(f"[{severity}] Sample: {key} | Crop: (top={gt_top}, left={gt_left}, "
+                              f"size={gt_size}) | Interval: {interval} | Losses: {loss_str}")
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
