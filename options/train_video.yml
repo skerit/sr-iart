@@ -71,6 +71,7 @@ path:
   pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
   strict_load_g: true
   resume_state: ~
+  visualization: experiments/IART_DVD_Bluray_video  # Directory for debug outputs
 
 # training settings
 train:
@@ -99,6 +100,7 @@ train:
   # Logging thresholds for debugging
   # Log when any loss exceeds this value
   high_loss_threshold: 0.06
+  save_high_loss_images: true  # Set to true to also save images for high-loss patches
   
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)

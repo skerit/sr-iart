@@ -1,6 +1,8 @@
 import torch
 import math
+import os
 from collections import OrderedDict
+import torchvision
 from torch.cuda.amp import autocast
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
@@ -217,6 +219,46 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     severity = "NaN DETECTED" if has_nan else "HIGH LOSS"
                     logger.warning(f"[{severity}] Sample: {key} | Crop: (top={gt_top}, left={gt_left}, "
                               f"size={gt_size}) | Interval: {interval} | Losses: {loss_str}")
+                    
+                    # Save problematic images for debugging
+                    if has_nan or (has_high_loss and self.opt['train'].get('save_high_loss_images', False)):
+                        debug_dir = os.path.join(self.opt['path']['visualization'], 'debug_patches')
+                        os.makedirs(debug_dir, exist_ok=True)
+                        
+                        # Clean key for filename
+                        clean_key = str(key).replace('/', '_').replace('[', '').replace(']', '').replace('\'', '')
+                        base_filename = f"iter_{self.current_iter:06d}_{clean_key}_top{gt_top}_left{gt_left}"
+                        
+                        # Save the images (handle video tensors)
+                        if self.lq.dim() == 5:  # Video tensor (B, T, C, H, W)
+                            # Take middle frame for saving
+                            mid_frame = self.lq.shape[1] // 2
+                            lq_save = self.lq[:, mid_frame, :, :, :]
+                            gt_save = self.gt[:, mid_frame, :, :, :]
+                            output_save = self.output[:, mid_frame, :, :, :]
+                        else:
+                            lq_save = self.lq
+                            gt_save = self.gt
+                            output_save = self.output
+                        
+                        # Save LQ, GT, and output
+                        torchvision.utils.save_image(
+                            lq_save, 
+                            os.path.join(debug_dir, f"{base_filename}_lq.png"),
+                            normalize=False
+                        )
+                        torchvision.utils.save_image(
+                            gt_save,
+                            os.path.join(debug_dir, f"{base_filename}_gt.png"),
+                            normalize=False
+                        )
+                        torchvision.utils.save_image(
+                            output_save,
+                            os.path.join(debug_dir, f"{base_filename}_output.png"),
+                            normalize=False
+                        )
+                        
+                        logger.info(f"Saved debug images to {debug_dir}/{base_filename}_*.png")
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
