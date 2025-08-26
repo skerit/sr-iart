@@ -156,7 +156,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         # update the gradient when forward 4 times
         self.optimizer_g.zero_grad()
 
-        with autocast():
+        # Disable autocast for float32 training (more stable but uses 2x memory)
+        use_mixed_precision = self.opt['train'].get('half_precision', True)
+        
+        with autocast(enabled=use_mixed_precision):
             self.output = self.net_g(self.lq)
             
             # Check for NaN immediately after model forward pass
