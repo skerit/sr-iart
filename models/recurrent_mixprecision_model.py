@@ -160,6 +160,15 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             self.output = self.net_g(self.lq)
             l_total = 0
             loss_dict = OrderedDict()
+            # Check if model is outputting black/invalid frames
+            output_mean = self.output.mean().item()
+            if output_mean < 0.001:
+                logger = get_root_logger()
+                logger.warning(f"Model outputting near-black frames! Mean: {output_mean:.6f}")
+                # Skip this iteration to prevent NaN propagation
+                self.optimizer_g.zero_grad()
+                return
+            
             # pixel loss
             if self.cri_pix:
                 l_pix = self.cri_pix(self.output, self.gt)
@@ -173,7 +182,16 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 output_4d = self.output.view(b * t, c, h, w)
                 gt_4d = self.gt.view(b * t, c, h, w)
                 
-                l_percep, l_style = self.cri_perceptual(output_4d, gt_4d)
+                # Skip perceptual loss for very dark patches to avoid NaN
+                output_mean = output_4d.mean()
+                gt_mean = gt_4d.mean()
+                if output_mean > 0.02 and gt_mean > 0.02:  # Only if not too dark
+                    l_percep, l_style = self.cri_perceptual(output_4d, gt_4d)
+                else:
+                    l_percep = torch.tensor(0.0, device=self.device)
+                    l_style = torch.tensor(0.0, device=self.device)
+                    logger = get_root_logger()
+                    logger.info(f"Skipped perceptual loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
                 if l_percep is not None:
                     l_total += l_percep
                     loss_dict['l_percep'] = l_percep
