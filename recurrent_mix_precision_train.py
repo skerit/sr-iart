@@ -162,6 +162,10 @@ def train_pipeline(root_path):
     #     model.validation(val_loader, current_iter, tb_logger, opt['val']['save_img'])
 
 
+    # Enable anomaly detection for debugging (SLOW!)
+    # Uncomment this to find exact NaN source:
+    # torch.autograd.set_detect_anomaly(True)
+    
     # training
     logger.info(f'Start training from epoch: {start_epoch}, iter: {current_iter}')
     data_timer, iter_timer = AvgTimer(), AvgTimer()

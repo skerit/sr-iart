@@ -239,11 +239,22 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 loss_dict['l_fft'] = l_fft
             scaler.scale(l_total).backward()
             
+            # Always unscale before gradient operations
+            scaler.unscale_(self.optimizer_g)
+            
+            # Check gradient norm BEFORE clipping
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=float('inf'))
+            
+            # Skip update if gradients are bad
+            if torch.isnan(grad_norm) or grad_norm > 100:
+                logger = get_root_logger()
+                logger.warning(f"Skipping update - bad gradients detected! Norm: {grad_norm:.2f}")
+                self.optimizer_g.zero_grad()
+                scaler.update()  # Still need to update scaler
+                return
+            
             # Gradient clipping to prevent NaN
             if self.opt['train'].get('use_grad_clip', False):
-                # Unscale gradients before clipping
-                scaler.unscale_(self.optimizer_g)
-                # Clip gradients - default to 0.5 if not specified
                 max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
                 torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
             
