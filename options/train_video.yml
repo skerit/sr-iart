@@ -105,16 +105,23 @@ train:
     loss_weight: 1.0
     reduction: mean
 
-  perceptual_opt:
-    type: PerceptualLoss
-    layer_weights:
-      'conv5_4': 1  
-    vgg_type: vgg19
-    use_input_norm: true
-    range_norm: false
-    perceptual_weight: 0.005  # Lower weight for fine-tuning
-    style_weight: 0
-    criterion: l1  # Use L1 instead of cb
+  # Commenting out perceptual loss - using FFT loss instead for stability
+  # perceptual_opt:
+  #   type: PerceptualLoss
+  #   layer_weights:
+  #     'conv5_4': 1  
+  #   vgg_type: vgg19
+  #   use_input_norm: true
+  #   range_norm: false
+  #   perceptual_weight: 0.005  # Lower weight for fine-tuning
+  #   style_weight: 0
+  #   criterion: l1  # Use L1 instead of cb
+  
+  # FFT loss for preserving high-frequency details (sharpness, grain)
+  fft_opt:
+    type: FFTLoss  # We'll implement this
+    loss_weight: 0.05  # Start conservative
+    reduction: mean
 
 # validation settings (disabled for now)
 val:

@@ -9,6 +9,7 @@ from torch.amp import GradScaler
 import archs  # noqa F401
 import models  # noqa F401
 import data  # noqa F401 - Import custom datasets
+import losses  # noqa F401 - Import custom losses including FFTLoss
 from basicsr.data import build_dataloader, build_dataset
 from basicsr.data.data_sampler import EnlargedSampler
 from basicsr.data.prefetch_dataloader import CPUPrefetcher, CUDAPrefetcher
