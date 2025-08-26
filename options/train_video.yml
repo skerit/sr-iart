@@ -89,7 +89,7 @@ train:
 
   total_iter: 50000  # More iterations with larger dataset
   use_grad_clip: true  # Enable gradient clipping
-  grad_clip_norm: 1.0  # Standard clipping value - too aggressive clipping can cause issues
+  grad_clip_norm: 0.5  # Reduced from 1.0 to prevent NaN on high-loss patches
   accumulation_steps: 4  # Accumulate gradients over 4 steps for stability
   set_DINO_OOM: true
   half_precision: true  # Mixed precision training
