@@ -227,7 +227,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                         
                         # Clean key for filename
                         clean_key = str(key).replace('/', '_').replace('[', '').replace(']', '').replace('\'', '')
-                        base_filename = f"iter_{self.current_iter:06d}_{clean_key}_top{gt_top}_left{gt_left}"
+                        base_filename = f"iter_{current_iter:06d}_{clean_key}_top{gt_top}_left{gt_left}"
                         
                         # Save the images (handle video tensors)
                         if self.lq.dim() == 5:  # Video tensor (B, T, C, H, W)
