@@ -159,11 +159,31 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         with autocast():
             self.output = self.net_g(self.lq)
             
+            # Check for NaN immediately after model forward pass
+            if torch.isnan(self.output).any():
+                logger = get_root_logger()
+                logger.error(f"CRITICAL: Model forward pass produced NaN! Model weights may be corrupted.")
+                # Check if model parameters have NaN
+                for name, param in self.net_g.named_parameters():
+                    if torch.isnan(param).any():
+                        logger.error(f"  NaN found in parameter: {name}")
+                        break
+                # Skip iteration and potentially need to restore from checkpoint
+                self.optimizer_g.zero_grad()
+                return
+            
             # Clamp output to valid range to prevent pure black
             self.output = torch.clamp(self.output, min=0.0, max=1.0)
             l_total = 0
             loss_dict = OrderedDict()
-            # Check if model is outputting black/invalid frames
+            # Check if model is outputting black/invalid/NaN frames
+            if torch.isnan(self.output).any():
+                logger = get_root_logger()
+                logger.warning(f"Model outputting NaN! Skipping iteration.")
+                # Skip this iteration to prevent NaN propagation
+                self.optimizer_g.zero_grad()
+                return
+            
             output_mean = self.output.mean().item()
             if output_mean < 0.001:
                 logger = get_root_logger()
