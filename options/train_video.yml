@@ -112,7 +112,7 @@ train:
     vgg_type: vgg19
     use_input_norm: true
     range_norm: false
-    perceptual_weight: 0.1  # Lower weight for fine-tuning
+    perceptual_weight: 0.005  # Lower weight for fine-tuning
     style_weight: 0
     criterion: l1  # Use L1 instead of cb
 
