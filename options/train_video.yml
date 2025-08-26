@@ -96,6 +96,10 @@ train:
   warmup_iter: 100  # Short warmup period
 
   # losses
+  # Logging thresholds for debugging
+  # Log when any loss exceeds this value
+  high_loss_threshold: 0.06
+  
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
     loss_weight: 1.0

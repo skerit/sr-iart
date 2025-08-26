@@ -177,10 +177,13 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             
             # Log detailed sample information when NaN is detected or losses are unusually high
             if hasattr(self, 'current_data'):
+                # Get threshold from config, default to 0.1
+                high_loss_threshold = self.opt['train'].get('high_loss_threshold', 0.1)
+                
                 # Check for NaN or very high losses
                 has_nan = any(torch.isnan(v) if torch.is_tensor(v) else math.isnan(v) 
                              for v in loss_dict.values())
-                has_high_loss = any((v > 1.0 if torch.is_tensor(v) else v > 1.0) 
+                has_high_loss = any((v > high_loss_threshold if torch.is_tensor(v) else v > high_loss_threshold) 
                                    for v in loss_dict.values())
                 
                 if has_nan or has_high_loss:
