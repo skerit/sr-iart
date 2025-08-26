@@ -1,4 +1,5 @@
 import torch
+import math
 from collections import OrderedDict
 from torch.cuda.amp import autocast
 from torch.nn.parallel import DataParallel, DistributedDataParallel
@@ -19,6 +20,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
 
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
+        self.current_data = None  # Store current batch data for logging
+    
+    def feed_data(self, data):
+        """Override feed_data to store current batch info for logging."""
+        self.current_data = data  # Store the full data dict
+        super(RecurrentMixPrecisionRTModel, self).feed_data(data)
 
         # define network
         self.net_g = build_network(opt['network_g'])
@@ -167,6 +174,29 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # self.optimizer_g.step()
 
             self.log_dict = self.reduce_loss_dict(loss_dict)
+            
+            # Log detailed sample information when NaN is detected or losses are unusually high
+            if hasattr(self, 'current_data'):
+                # Check for NaN or very high losses
+                has_nan = any(torch.isnan(v) if torch.is_tensor(v) else math.isnan(v) 
+                             for v in loss_dict.values())
+                has_high_loss = any((v > 1.0 if torch.is_tensor(v) else v > 1.0) 
+                                   for v in loss_dict.values())
+                
+                if has_nan or has_high_loss:
+                    logger = get_root_logger()
+                    data = self.current_data
+                    key = data.get('key', 'unknown')
+                    coords = data.get('crop_coords', {})
+                    interval = data.get('interval', 1)
+                    
+                    # Format losses for logging
+                    loss_str = ', '.join([f"{k}: {v:.4f}" if not (torch.isnan(v) if torch.is_tensor(v) else math.isnan(v)) 
+                                        else f"{k}: NaN" for k, v in loss_dict.items()])
+                    
+                    severity = "NaN DETECTED" if has_nan else "HIGH LOSS"
+                    logger.warning(f"[{severity}] Sample: {key} | Crop: ({coords.get('gt_top', 0)}, {coords.get('gt_left', 0)}, "
+                              f"{coords.get('gt_size', 0)}) | Interval: {interval} | Losses: {loss_str}")
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)

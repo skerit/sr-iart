@@ -228,7 +228,10 @@ class VideoRecurrentDataset(data.Dataset):
         return {
             'lq': img_lqs,
             'gt': img_gts,
-            'key': f"{clip['name']}_{start_frame:08d}"
+            'key': f"{clip['name']}_{start_frame:08d}",
+            'crop_coords': {'gt_top': gt_top, 'gt_left': gt_left, 'gt_size': gt_size,
+                           'lq_top': lq_top, 'lq_left': lq_left, 'lq_size': lq_size},
+            'interval': interval
         }
 
     def __len__(self):
