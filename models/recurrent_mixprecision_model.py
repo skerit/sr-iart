@@ -141,6 +141,8 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         self.optimizers.append(self.optimizer_g)
 
     def optimize_parameters(self, scaler, current_iter):
+        # Store current iteration for use in optimization
+        self.current_iter = current_iter
 
         if self.fix_flow_iter:
             logger = get_root_logger()
