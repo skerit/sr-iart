@@ -251,7 +251,29 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 logger.warning(f"Skipping update - bad gradients detected! Norm: {grad_norm:.2f}")
                 self.optimizer_g.zero_grad()
                 scaler.update()  # Still need to update scaler
+                
+                # Track bad updates
+                if not hasattr(self, 'bad_update_count'):
+                    self.bad_update_count = 0
+                self.bad_update_count += 1
+                
+                # Reset optimizer if too many bad updates
+                if self.bad_update_count >= 3:
+                    logger.warning("Too many bad updates - resetting optimizer state!")
+                    self.optimizer_g.state.clear()
+                    self.bad_update_count = 0
                 return
+            
+            # Reset bad update counter on successful update
+            if hasattr(self, 'bad_update_count'):
+                self.bad_update_count = 0
+            
+            # Periodic optimizer reset to prevent long-term accumulation
+            # Reset every 5000 iterations (adjust as needed)
+            if self.current_iter > 0 and self.current_iter % 5000 == 0:
+                logger = get_root_logger()
+                logger.info(f"Periodic optimizer reset at iteration {self.current_iter}")
+                self.optimizer_g.state.clear()
             
             # Gradient clipping to prevent NaN
             if self.opt['train'].get('use_grad_clip', False):
