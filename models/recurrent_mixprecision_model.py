@@ -158,6 +158,9 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
 
         with autocast():
             self.output = self.net_g(self.lq)
+            
+            # Clamp output to valid range to prevent pure black
+            self.output = torch.clamp(self.output, min=0.0, max=1.0)
             l_total = 0
             loss_dict = OrderedDict()
             # Check if model is outputting black/invalid frames
