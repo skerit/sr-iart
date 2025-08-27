@@ -143,26 +143,38 @@ class VideoRecurrentDataset(data.Dataset):
         # Get frame count and ensure we don't go out of bounds
         frame_count = clip['frame_count']
         
-        # Random interval first so we know the span
-        interval = np.random.choice(self.interval_list)
-        
-        # Calculate how many frames we need
-        frames_needed = (self.num_frame - 1) * interval + 1
-        
-        # Ensure we have enough frames
-        if frame_count < frames_needed:
-            # Not enough frames, use interval 1 and start at 0
-            interval = 1
-            start_frame = 0
-            if frame_count < self.num_frame:
-                # Still not enough frames - this clip is too short
-                logger = get_root_logger()
-                logger.warning(f"Clip {clip['name']} has only {frame_count} frames, need {self.num_frame}")
+        # For validation, use fixed interval and starting position
+        if test_mode:
+            # Fixed interval for validation
+            interval = 1  # Always use interval 1 for consistency
+            frames_needed = self.num_frame
+            
+            # Always start from the middle of the clip for consistency
+            if frame_count >= frames_needed:
+                start_frame = (frame_count - frames_needed) // 2
+            else:
                 start_frame = 0
         else:
-            # Calculate valid range for start frame
-            max_start = frame_count - frames_needed + 1
-            start_frame = np.random.randint(0, max(1, max_start))
+            # Random interval for training
+            interval = np.random.choice(self.interval_list)
+            
+            # Calculate how many frames we need
+            frames_needed = (self.num_frame - 1) * interval + 1
+            
+            # Ensure we have enough frames
+            if frame_count < frames_needed:
+                # Not enough frames, use interval 1 and start at 0
+                interval = 1
+                start_frame = 0
+                if frame_count < self.num_frame:
+                    # Still not enough frames - this clip is too short
+                    logger = get_root_logger()
+                    logger.warning(f"Clip {clip['name']} has only {frame_count} frames, need {self.num_frame}")
+                    start_frame = 0
+            else:
+                # Calculate valid range for start frame
+                max_start = frame_count - frames_needed + 1
+                start_frame = np.random.randint(0, max(1, max_start))
         
         # Get first frame to determine dimensions
         gt_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -181,15 +193,22 @@ class VideoRecurrentDataset(data.Dataset):
         else:
             lq_h, lq_w = gt_h // 4, gt_w // 4  # Assume 4x scale
         
-        # Calculate random crop position (same for all frames)
+        # Calculate crop position (same for all frames)
         if self.gt_size is not None:
             # Ensure crop size doesn't exceed frame size
             gt_size = min(self.gt_size, gt_h, gt_w)
             lq_size = gt_size // 4  # Assuming 4x scale
             
-            # Random crop position
-            gt_top = np.random.randint(0, gt_h - gt_size + 1) if gt_h > gt_size else 0
-            gt_left = np.random.randint(0, gt_w - gt_size + 1) if gt_w > gt_size else 0
+            # For validation/test mode, use center crop for consistency
+            if test_mode:
+                # Center crop for deterministic validation
+                gt_top = (gt_h - gt_size) // 2 if gt_h > gt_size else 0
+                gt_left = (gt_w - gt_size) // 2 if gt_w > gt_size else 0
+            else:
+                # Random crop for training
+                gt_top = np.random.randint(0, gt_h - gt_size + 1) if gt_h > gt_size else 0
+                gt_left = np.random.randint(0, gt_w - gt_size + 1) if gt_w > gt_size else 0
+            
             lq_top = gt_top // 4
             lq_left = gt_left // 4
         else:
