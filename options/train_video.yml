@@ -50,6 +50,31 @@ datasets:
     prefetch_mode: 'cuda'  # Prefetch to GPU while processing
     pin_memory: true  # Enable pinned memory for faster GPU transfer
 
+  # Validation dataset - use a subset of videos or specific test clips
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    dataroot_gt: datasets/dvd_bluray/gt  # Same directory, will filter in metadata
+    dataroot_lq: datasets/dvd_bluray/lq  
+    meta_info_file: datasets/dvd_bluray/val_metadata.json  # Separate validation metadata
+    test_mode: True  # No augmentation for validation
+    io_backend:
+      type: disk
+    
+    num_frame: 16  # Same as training
+    gt_size: ~  # No cropping for validation - use full frames
+    interval_list: [1]  # Fixed interval for consistent validation
+    random_reverse: false  # No augmentation
+    use_hflip: false
+    use_rot: false
+    
+    # Validation data loader
+    use_shuffle: false  # Don't shuffle validation
+    num_worker_per_gpu: 2
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1  # No enlargement for validation
+    pin_memory: true
+
 # network structures
 network_g:
   type: IART
@@ -149,18 +174,18 @@ train:
     normalize: true  # Convert [0,1] to [-1,1]
     reduction: mean
 
-# validation settings (disabled for now)
+# validation settings
 val:
-  val_freq: !!float 999999  # Effectively disabled
-  save_img: false
-  grids: false
+  val_freq: 2500  # Validate every 2500 iterations
+  save_img: true  # Save validation images to check quality
+  grids: true  # Create comparison grids
   max_minibatch: 8
 
   metrics:
     psnr:
       type: calculate_psnr
       crop_border: 0
-      test_y_channel: false
+      test_y_channel: false  # Use RGB, not just Y channel
     ssim:
       type: calculate_ssim  
       crop_border: 0
