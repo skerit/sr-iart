@@ -352,10 +352,11 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # Check gradient norm BEFORE clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=float('inf'))
             
-            # Log gradient norm periodically
+            # Log gradient norm and learning rate periodically
             if self.current_iter % 50 == 0:
                 logger = get_root_logger()
-                logger.info(f"Gradient norm at iter {self.current_iter}: {grad_norm:.4f}")
+                current_lr = self.optimizer_g.param_groups[0]['lr']
+                logger.info(f"Iter {self.current_iter}: grad_norm={grad_norm:.4f}, lr={current_lr:.2e}")
             
             # Skip update if gradients are bad
             if torch.isnan(grad_norm) or grad_norm > 1000:  # Increased threshold
@@ -399,6 +400,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # self.optimizer_g.step()
 
             self.log_dict = self.reduce_loss_dict(loss_dict)
+            
+            # Log detailed losses every 50 iterations to debug learning
+            if self.current_iter % 50 == 0:
+                logger = get_root_logger()
+                loss_str = ' | '.join([f'{k}={v:.4f}' for k, v in self.log_dict.items()])
+                logger.info(f"Losses at iter {self.current_iter}: {loss_str}")
             
             # Log detailed sample information when NaN is detected or losses are unusually high
             if hasattr(self, 'current_data'):
