@@ -115,7 +115,7 @@ train:
 
   total_iter: 50000  # More iterations with larger dataset
   use_grad_clip: true  # Enable gradient clipping
-  grad_clip_norm: 1.0  # Tighter clipping
+  grad_clip_norm: 5.0  # Relaxed clipping to allow larger updates
   # accumulation_steps: 1  # Disabled - apply gradients immediately
   set_DINO_OOM: true
   half_precision: true  # Mixed precision training
