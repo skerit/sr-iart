@@ -260,6 +260,21 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 self.optimizer_g.zero_grad()
                 return
             
+            skip_because_too_dark = False
+            check_too_dark_patches = False
+            
+            if check_too_dark_patches:
+                output_mean = output_4d.mean()
+                gt_mean = gt_4d.mean()
+                if output_mean > 0.02 and gt_mean > 0.02:
+                    skip_because_too_dark = False
+                else:
+                    skip_because_too_dark = True
+                    logger = get_root_logger()
+                    logger.info(f"Skipped loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
+            
+            allow_patch = not skip_because_too_dark
+
             # pixel loss
             if self.cri_pix:
                 l_pix = self.cri_pix(self.output, self.gt)
@@ -273,16 +288,11 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 output_4d = self.output.view(b * t, c, h, w)
                 gt_4d = self.gt.view(b * t, c, h, w)
                 
-                # Skip perceptual loss for very dark patches to avoid NaN
-                output_mean = output_4d.mean()
-                gt_mean = gt_4d.mean()
-                if output_mean > 0.02 and gt_mean > 0.02:  # Only if not too dark
+                if allow_patch:
                     l_percep, l_style = self.cri_perceptual(output_4d, gt_4d)
                 else:
                     l_percep = torch.tensor(0.0, device=self.device)
                     l_style = torch.tensor(0.0, device=self.device)
-                    logger = get_root_logger()
-                    logger.info(f"Skipped perceptual loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
                 if l_percep is not None:
                     l_total += l_percep
                     loss_dict['l_percep'] = l_percep
@@ -307,15 +317,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     output_4d = self.output
                     gt_4d = self.gt
                 
-                # Skip ConvNeXt loss for very dark patches to avoid instability
-                output_mean = output_4d.mean()
-                gt_mean = gt_4d.mean()
-                if output_mean > 0.02 and gt_mean > 0.02:  # Only if not too dark
+                if allow_patch:
                     l_convnext = self.cri_convnext(output_4d, gt_4d)
                 else:
                     l_convnext = torch.tensor(0.0, device=self.device)
-                    logger = get_root_logger()
-                    logger.info(f"Skipped ConvNeXt loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
                 
                 l_total += l_convnext
                 loss_dict['l_convnext'] = l_convnext
@@ -331,15 +336,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     output_4d = self.output
                     gt_4d = self.gt
                 
-                # Skip LPIPS loss for very dark patches to avoid instability
-                output_mean = output_4d.mean()
-                gt_mean = gt_4d.mean()
-                if output_mean > 0.02 and gt_mean > 0.02:  # Only if not too dark
+                if allow_patch:
                     l_lpips = self.cri_lpips(output_4d, gt_4d)
                 else:
                     l_lpips = torch.tensor(0.0, device=self.device)
-                    logger = get_root_logger()
-                    logger.info(f"Skipped LPIPS loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
                 
                 l_total += l_lpips
                 loss_dict['l_lpips'] = l_lpips
