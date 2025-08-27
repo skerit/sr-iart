@@ -105,8 +105,8 @@ train:
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
 
-    # Weight of 30 returns +/- 1.0
-    loss_weight: 30.0
+    # Weight of 25 returns +/- 1.0
+    loss_weight: 15.0
     reduction: mean
 
   # Commenting out perceptual loss - using FFT loss instead for stability
@@ -124,7 +124,7 @@ train:
   # FFT loss for preserving high-frequency details (sharpness, grain)
   fft_opt:
     type: FFTLoss  # We'll implement this
-    # Loss of 6 is about 1.0
+    # Weight of 60 is about 1.0
     loss_weight: 2
     reduction: mean
 
@@ -133,13 +133,21 @@ train:
     type: ConvNextLoss
 
     # Weight of 100.0 returns +/- 0.9 loss
-    loss_weight: 80.0
+    loss_weight: 40.0
     model_type: small  # tiny, small, base, or large
     feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
     use_gram: false  # Set to true if you want style transfer effects
     layer_weight_decay: 0.9  # How much to decay weights for deeper layers
     reduction: mean
     input_range: [0, 1]  # Our tensors are normalized to [0, 1]
+
+  # LPIPS - human-calibrated perceptual loss (using AlexNet)
+  lpips_opt:
+    type: LPIPSLoss
+    loss_weight: 5.0  # LPIPS returns ~0.01-0.1
+    net_type: alex  # AlexNet - best correlation with human perception
+    normalize: true  # Convert [0,1] to [-1,1]
+    reduction: mean
 
 # validation settings (disabled for now)
 val:

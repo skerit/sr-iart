@@ -1,0 +1,141 @@
+# IART training configuration for DVD→Blu-ray restoration with LPIPS
+# Human-calibrated perceptual loss
+
+# general settings
+name: IART_DVD_Bluray_LPIPS
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    dataroot_gt: datasets/dvd_bluray/gt
+    dataroot_lq: datasets/dvd_bluray/lq
+    meta_info_file: datasets/dvd_bluray/video_metadata.json
+    val_partition: REDS4
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16
+    gt_size: 320
+    interval_list: [1, 2, 3]
+    random_reverse: true
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 10
+    prefetch_mode: 'cuda'
+    pin_memory: true
+
+# network structures
+network_g:
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16
+  img_size: 64
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  use_checkpoint: [true, true, true, true]
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
+  strict_load_g: true
+  resume_state: ~
+  visualization: experiments/IART_DVD_Bluray_LPIPS
+
+# training settings
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: AdamW
+    lr: !!float 4e-6
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [50000]
+    restart_weights: [1]
+    eta_min: !!float 1e-7
+
+  total_iter: 50000
+  use_grad_clip: true
+  grad_clip_norm: 2.0
+  accumulation_steps: 4
+  set_DINO_OOM: true
+  half_precision: true
+  warmup_iter: 100
+
+  high_loss_threshold: 1.0
+  save_high_loss_images: true
+  
+  # Pixel loss - fundamental reconstruction
+  pixel_opt:
+    type: CharbonnierLoss
+    loss_weight: 15.0  # Adjusted for LPIPS scale
+    reduction: mean
+
+  # LPIPS - human-calibrated perceptual loss
+  lpips_opt:
+    type: LPIPSLoss
+    loss_weight: 10.0  # LPIPS typically returns values ~0.01-0.1
+    net_type: vgg  # 'alex' for speed, 'vgg' for traditional perceptual, 'squeeze' for small
+    spatial: false  # Return scalar loss
+    version: '0.1'  # Latest version
+    normalize: true  # Our tensors are [0,1], LPIPS expects [-1,1]
+    reduction: mean
+
+  # Optional: FFT for grain preservation (uncomment if needed)
+  # fft_opt:
+  #   type: FFTLoss
+  #   loss_weight: 2
+  #   reduction: mean
+
+# validation settings
+val:
+  val_freq: !!float 999999
+  save_img: false
+  grids: false
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 10
+  save_checkpoint_freq: 100
+  use_tb_logger: true
+  wandb:
+    project: srvideo-dvd-bluray-lpips
+    resume_id: srvideo-dvd-bluray-lpips
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

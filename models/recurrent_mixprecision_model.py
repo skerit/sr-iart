@@ -85,6 +85,32 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                            f"using {convnext_opt.get('model_type', 'tiny')} model")
             else:
                 self.cri_convnext = None
+            
+            # Initialize LPIPS loss if configured
+            if train_opt.get('lpips_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom LPIPS loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.lpips_loss import LPIPSLoss
+                
+                lpips_opt = train_opt['lpips_opt']
+                self.cri_lpips = LPIPSLoss(
+                    loss_weight=lpips_opt.get('loss_weight', 1.0),
+                    net_type=lpips_opt.get('net_type', 'alex'),
+                    use_gpu=True,
+                    spatial=lpips_opt.get('spatial', False),
+                    version=lpips_opt.get('version', '0.1'),
+                    normalize=lpips_opt.get('normalize', True),
+                    reduction=lpips_opt.get('reduction', 'mean')
+                ).to(self.device)
+                logger.info(f"LPIPS Loss initialized with weight {lpips_opt.get('loss_weight', 1.0)} "
+                           f"using {lpips_opt.get('net_type', 'alex')} network")
+            else:
+                self.cri_lpips = None
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
@@ -292,6 +318,30 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 
                 l_total += l_convnext
                 loss_dict['l_convnext'] = l_convnext
+            
+            # LPIPS perceptual loss - human-calibrated
+            if hasattr(self, 'cri_lpips') and self.cri_lpips:
+                # Reshape 5D video tensors to 4D for LPIPS loss
+                if self.output.dim() == 5:
+                    b, t, c, h, w = self.output.shape
+                    output_4d = self.output.view(b * t, c, h, w)
+                    gt_4d = self.gt.view(b * t, c, h, w)
+                else:
+                    output_4d = self.output
+                    gt_4d = self.gt
+                
+                # Skip LPIPS loss for very dark patches to avoid instability
+                output_mean = output_4d.mean()
+                gt_mean = gt_4d.mean()
+                if output_mean > 0.02 and gt_mean > 0.02:  # Only if not too dark
+                    l_lpips = self.cri_lpips(output_4d, gt_4d)
+                else:
+                    l_lpips = torch.tensor(0.0, device=self.device)
+                    logger = get_root_logger()
+                    logger.info(f"Skipped LPIPS loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
+                
+                l_total += l_lpips
+                loss_dict['l_lpips'] = l_lpips
             
             scaler.scale(l_total).backward()
             
