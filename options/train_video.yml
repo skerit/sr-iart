@@ -78,7 +78,7 @@ train:
   ema_decay: 0.999
   optim_g:
     type: AdamW
-    lr: !!float 5e-6  # Reduced from 2e-5 for stability
+    lr: !!float 4e-6  # Reduced from 2e-5 for stability
     weight_decay: 0.01 # AdamW works better with small weight decay
     betas: [0.9, 0.999] # Standard betas - 0.999 is more stable than 0.99
 
@@ -90,7 +90,7 @@ train:
 
   total_iter: 50000  # More iterations with larger dataset
   use_grad_clip: true  # Enable gradient clipping
-  grad_clip_norm: 0.5  # Reduced from 1.0 to prevent NaN on high-loss patches
+  grad_clip_norm: 2.0
   accumulation_steps: 4  # Accumulate gradients over 4 steps for stability
   set_DINO_OOM: true
   half_precision: true  # Mixed precision training
@@ -99,14 +99,14 @@ train:
   # losses
   # Logging thresholds for debugging
   # Log when any loss exceeds this value
-  high_loss_threshold: 0.06
+  high_loss_threshold: 1.0
   save_high_loss_images: true  # Set to true to also save images for high-loss patches
   
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
 
-    # Weight of 300 returns +/- 10.0
-    loss_weight: 300.0
+    # Weight of 30 returns +/- 1.0
+    loss_weight: 30.0
     reduction: mean
 
   # Commenting out perceptual loss - using FFT loss instead for stability
@@ -124,16 +124,16 @@ train:
   # FFT loss for preserving high-frequency details (sharpness, grain)
   fft_opt:
     type: FFTLoss  # We'll implement this
-    # Loss of 60 is about 10.0
-    loss_weight: 20
+    # Loss of 6 is about 1.0
+    loss_weight: 2
     reduction: mean
 
   # ConvNeXt perceptual loss - more stable than VGG
   convnext_opt:
     type: ConvNextLoss
 
-    # Weight of 1000.0 returns +/- 9.0 loss
-    loss_weight: 800.0
+    # Weight of 100.0 returns +/- 0.9 loss
+    loss_weight: 80.0
     model_type: small  # tiny, small, base, or large
     feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
     use_gram: false  # Set to true if you want style transfer effects
