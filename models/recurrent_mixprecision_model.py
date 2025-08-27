@@ -604,6 +604,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     os.makedirs(save_folder, exist_ok=True)
                     save_path = osp.join(save_folder, f'{folder}_grid.png')
                     imwrite(grid, save_path)
+                    
+                    # Also save the generated frame separately
+                    output_path = osp.join(save_folder, f'{folder}_output.png')
+                    imwrite(result_frame, output_path)
                 else:
                     # Save individual images
                     save_folder = osp.join(self.opt['path']['visualization'], 
