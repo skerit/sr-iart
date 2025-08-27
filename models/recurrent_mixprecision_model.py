@@ -497,6 +497,9 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         from basicsr.utils import tensor2img, imwrite
         from basicsr.utils.dist_util import get_dist_info
         
+        # Set model to eval mode and disable gradient computation
+        self.net_g.eval()
+        
         dataset = dataloader.dataset
         dataset_name = dataset.opt['name']
         
@@ -534,95 +537,96 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         # Limit validation to first 5 clips for speed during testing
         max_folders = min(5, num_folders) if current_iter <= 10 else num_folders
         
-        for idx in range(max_folders):
-            val_data = dataset[idx]
-            folder = val_data['folder']
-            
-            # Add batch dimension
-            val_data['lq'].unsqueeze_(0)
-            val_data['gt'].unsqueeze_(0)
-            self.feed_data(val_data)
-            val_data['lq'].squeeze_(0)
-            val_data['gt'].squeeze_(0)
-            
-            # Test (forward pass)
-            self.test()
-            visuals = self.get_current_visuals()
-            
-            # Process output
-            result_img = tensor2img([visuals['result']])  # uint8, bgr
-            gt_img = tensor2img([visuals['gt']])  # uint8, bgr
-            lq_img = tensor2img([visuals['lq']])  # uint8, bgr
-            
-            # Calculate metrics
-            if with_metrics:
-                for metric_idx, opt_ in enumerate(self.opt['val']['metrics'].values()):
-                    metric_type = opt_['type']
-                    metric_result = calculate_metric(
-                        {'img': result_img, 'img2': gt_img}, opt_)
-                    metric_data[f'{folder}_{metric_type}'] = metric_result
-                    
-                    # Store in metric_results
-                    if hasattr(self, 'metric_results'):
-                        self.metric_results[folder][0, metric_idx] += metric_result
-            
-            # Save images
-            if save_img_this_iter:
-                if self.opt['val'].get('grids', False):
-                    # For video tensors, extract middle frame for comparison
-                    if len(visuals['result'].shape) == 5:  # [B, T, C, H, W]
-                        mid_frame = visuals['result'].shape[1] // 2
-                        result_frame = tensor2img([visuals['result'][0, mid_frame]])
-                        gt_frame = tensor2img([visuals['gt'][0, mid_frame]])
-                        lq_frame = tensor2img([visuals['lq'][0, mid_frame]])
+        with torch.no_grad():  # Disable gradient computation for validation
+            for idx in range(max_folders):
+                val_data = dataset[idx]
+                folder = val_data['folder']
+                
+                # Add batch dimension
+                val_data['lq'].unsqueeze_(0)
+                val_data['gt'].unsqueeze_(0)
+                self.feed_data(val_data)
+                val_data['lq'].squeeze_(0)
+                val_data['gt'].squeeze_(0)
+                
+                # Test (forward pass)
+                self.test()
+                visuals = self.get_current_visuals()
+                
+                # Process output
+                result_img = tensor2img([visuals['result']])  # uint8, bgr
+                gt_img = tensor2img([visuals['gt']])  # uint8, bgr
+                lq_img = tensor2img([visuals['lq']])  # uint8, bgr
+                
+                # Calculate metrics
+                if with_metrics:
+                    for metric_idx, opt_ in enumerate(self.opt['val']['metrics'].values()):
+                        metric_type = opt_['type']
+                        metric_result = calculate_metric(
+                            {'img': result_img, 'img2': gt_img}, opt_)
+                        metric_data[f'{folder}_{metric_type}'] = metric_result
+                        
+                        # Store in metric_results
+                        if hasattr(self, 'metric_results'):
+                            self.metric_results[folder][0, metric_idx] += metric_result
+                
+                # Save images
+                if save_img_this_iter:
+                    if self.opt['val'].get('grids', False):
+                        # For video tensors, extract middle frame for comparison
+                        if len(visuals['result'].shape) == 5:  # [B, T, C, H, W]
+                            mid_frame = visuals['result'].shape[1] // 2
+                            result_frame = tensor2img([visuals['result'][0, mid_frame]])
+                            gt_frame = tensor2img([visuals['gt'][0, mid_frame]])
+                            lq_frame = tensor2img([visuals['lq'][0, mid_frame]])
+                        else:
+                            result_frame = result_img
+                            gt_frame = gt_img
+                            lq_frame = lq_img
+                        
+                        # Create comparison grid: LQ | Output | GT
+                        # All images are already uint8 BGR numpy arrays
+                        h, w = gt_frame.shape[:2]
+                        lq_resized = cv2.resize(lq_frame, (w, h), interpolation=cv2.INTER_CUBIC)
+                        
+                        # Create grid
+                        grid = np.concatenate([lq_resized, result_frame, gt_frame], axis=1)
+                        
+                        # Save grid
+                        save_folder = osp.join(self.opt['path']['visualization'], 
+                                             f'val_images_iter_{current_iter:06d}')
+                        os.makedirs(save_folder, exist_ok=True)
+                        save_path = osp.join(save_folder, f'{folder}_grid.png')
+                        imwrite(grid, save_path)
+                        
+                        # Also save the generated frame separately
+                        output_path = osp.join(save_folder, f'{folder}_output.png')
+                        imwrite(result_frame, output_path)
                     else:
-                        result_frame = result_img
-                        gt_frame = gt_img
-                        lq_frame = lq_img
-                    
-                    # Create comparison grid: LQ | Output | GT
-                    # All images are already uint8 BGR numpy arrays
-                    h, w = gt_frame.shape[:2]
-                    lq_resized = cv2.resize(lq_frame, (w, h), interpolation=cv2.INTER_CUBIC)
-                    
-                    # Create grid
-                    grid = np.concatenate([lq_resized, result_frame, gt_frame], axis=1)
-                    
-                    # Save grid
-                    save_folder = osp.join(self.opt['path']['visualization'], 
-                                         f'val_images_iter_{current_iter:06d}')
-                    os.makedirs(save_folder, exist_ok=True)
-                    save_path = osp.join(save_folder, f'{folder}_grid.png')
-                    imwrite(grid, save_path)
-                    
-                    # Also save the generated frame separately
-                    output_path = osp.join(save_folder, f'{folder}_output.png')
-                    imwrite(result_frame, output_path)
-                else:
-                    # Save individual images
-                    save_folder = osp.join(self.opt['path']['visualization'], 
-                                         f'val_images_iter_{current_iter:06d}')
-                    os.makedirs(save_folder, exist_ok=True)
-                    
-                    # Save LQ, output, GT
-                    imwrite(lq_img, osp.join(save_folder, f'{folder}_lq.png'))
-                    imwrite(result_img, osp.join(save_folder, f'{folder}_output.png'))
-                    imwrite(gt_img, osp.join(save_folder, f'{folder}_gt.png'))
-            
-            # Clean up visuals and GPU memory after each validation clip
-            del visuals
-            if hasattr(self, 'lq'):
-                del self.lq
-            if hasattr(self, 'gt'):
-                del self.gt
-            if hasattr(self, 'output'):
-                del self.output
-            torch.cuda.empty_cache()
-            
-            if rank == 0:
-                pbar.update(1)
-                pbar.set_postfix(**{k: f'{v:.3f}' for k, v in metric_data.items() 
-                                   if folder in k})
+                        # Save individual images
+                        save_folder = osp.join(self.opt['path']['visualization'], 
+                                             f'val_images_iter_{current_iter:06d}')
+                        os.makedirs(save_folder, exist_ok=True)
+                        
+                        # Save LQ, output, GT
+                        imwrite(lq_img, osp.join(save_folder, f'{folder}_lq.png'))
+                        imwrite(result_img, osp.join(save_folder, f'{folder}_output.png'))
+                        imwrite(gt_img, osp.join(save_folder, f'{folder}_gt.png'))
+                
+                # Clean up visuals and GPU memory after each validation clip
+                del visuals
+                if hasattr(self, 'lq'):
+                    del self.lq
+                if hasattr(self, 'gt'):
+                    del self.gt
+                if hasattr(self, 'output'):
+                    del self.output
+                torch.cuda.empty_cache()
+                
+                if rank == 0:
+                    pbar.update(1)
+                    pbar.set_postfix(**{k: f'{v:.3f}' for k, v in metric_data.items() 
+                                       if folder in k})
         
         if rank == 0:
             pbar.close()
@@ -647,7 +651,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             if save_img_this_iter:
                 logger.info(f'Validation images saved to: {save_folder}')
         
-        # Clean up GPU memory after validation
+        # Set model back to train mode
+        self.net_g.train()
+        
+        # Final cleanup of GPU memory after validation
         if hasattr(self, 'lq'):
             del self.lq
         if hasattr(self, 'gt'):
