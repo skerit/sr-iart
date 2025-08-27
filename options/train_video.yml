@@ -124,7 +124,7 @@ train:
   # losses
   # Logging thresholds for debugging
   # Log when any loss exceeds this value
-  high_loss_threshold: 1.0
+  high_loss_threshold: 1.2
   save_high_loss_images: true  # Set to true to also save images for high-loss patches
   
   pixel_opt:
