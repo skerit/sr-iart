@@ -569,13 +569,24 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # Save images
             if save_img_this_iter:
                 if self.opt['val'].get('grids', False):
+                    # For video tensors, extract middle frame for comparison
+                    if len(visuals['result'].shape) == 5:  # [B, T, C, H, W]
+                        mid_frame = visuals['result'].shape[1] // 2
+                        result_frame = tensor2img([visuals['result'][0, mid_frame]])
+                        gt_frame = tensor2img([visuals['gt'][0, mid_frame]])
+                        lq_frame = tensor2img([visuals['lq'][0, mid_frame]])
+                    else:
+                        result_frame = result_img
+                        gt_frame = gt_img
+                        lq_frame = lq_img
+                    
                     # Create comparison grid: LQ | Output | GT
                     # All images are already uint8 BGR numpy arrays
-                    h, w = gt_img.shape[:2]
-                    lq_resized = cv2.resize(lq_img, (w, h), interpolation=cv2.INTER_CUBIC)
+                    h, w = gt_frame.shape[:2]
+                    lq_resized = cv2.resize(lq_frame, (w, h), interpolation=cv2.INTER_CUBIC)
                     
                     # Create grid
-                    grid = np.concatenate([lq_resized, result_img, gt_img], axis=1)
+                    grid = np.concatenate([lq_resized, result_frame, gt_frame], axis=1)
                     
                     # Save grid
                     save_folder = osp.join(self.opt['path']['visualization'], 
