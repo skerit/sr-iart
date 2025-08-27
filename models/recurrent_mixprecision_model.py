@@ -554,16 +554,6 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             gt_img = tensor2img([visuals['gt']])  # uint8, bgr
             lq_img = tensor2img([visuals['lq']])  # uint8, bgr
             
-            # Clean up GPU tensors immediately after converting to CPU
-            del visuals
-            if hasattr(self, 'lq'):
-                del self.lq
-            if hasattr(self, 'gt'):
-                del self.gt
-            if hasattr(self, 'output'):
-                del self.output
-            torch.cuda.empty_cache()
-            
             # Calculate metrics
             if with_metrics:
                 for metric_idx, opt_ in enumerate(self.opt['val']['metrics'].values()):
@@ -618,6 +608,16 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     imwrite(lq_img, osp.join(save_folder, f'{folder}_lq.png'))
                     imwrite(result_img, osp.join(save_folder, f'{folder}_output.png'))
                     imwrite(gt_img, osp.join(save_folder, f'{folder}_gt.png'))
+            
+            # Clean up visuals and GPU memory after each validation clip
+            del visuals
+            if hasattr(self, 'lq'):
+                del self.lq
+            if hasattr(self, 'gt'):
+                del self.gt
+            if hasattr(self, 'output'):
+                del self.output
+            torch.cuda.empty_cache()
             
             if rank == 0:
                 pbar.update(1)
