@@ -104,7 +104,9 @@ train:
   
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
-    loss_weight: 1.0
+
+    # Weight of 300 returns +/- 10.0
+    loss_weight: 300.0
     reduction: mean
 
   # Commenting out perceptual loss - using FFT loss instead for stability
@@ -120,16 +122,19 @@ train:
   #   criterion: l1  # Use L1 instead of cb
   
   # FFT loss for preserving high-frequency details (sharpness, grain)
-  #fft_opt:
-  #  type: FFTLoss  # We'll implement this
-  #  loss_weight: 0.05  # Start conservative
-  #  reduction: mean
+  fft_opt:
+    type: FFTLoss  # We'll implement this
+    # Loss of 60 is about 10.0
+    loss_weight: 20
+    reduction: mean
 
   # ConvNeXt perceptual loss - more stable than VGG
   convnext_opt:
     type: ConvNextLoss
-    loss_weight: 100.0  # Scaled up to match pixel loss magnitude
-    model_type: tiny  # tiny, small, base, or large
+
+    # Weight of 1000.0 returns +/- 9.0 loss
+    loss_weight: 800.0
+    model_type: small  # tiny, small, base, or large
     feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
     use_gram: false  # Set to true if you want style transfer effects
     layer_weight_decay: 0.9  # How much to decay weights for deeper layers
