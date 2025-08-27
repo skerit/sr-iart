@@ -221,7 +221,7 @@ def train_pipeline(root_path):
                     # Add timing info
                     wandb_log['iter_time'] = iter_timer.get_avg_time()
                     wandb_log['data_time'] = data_timer.get_avg_time()
-                    wandb.log(wandb_log, step=current_iter)
+                    wandb.log(wandb_log)  # No step - let tensorboard sync handle it
 
             # save models and training states
             if current_iter % opt['logger']['save_checkpoint_freq'] == 0:
@@ -264,7 +264,7 @@ def train_pipeline(root_path):
                                 if len(avg_metrics) >= 2:
                                     val_log[f'val/ssim'] = avg_metrics[1].item()
                             if val_log:
-                                wandb.log(val_log, step=current_iter)
+                                wandb.log(val_log)  # No step - let tensorboard sync handle it
 
             data_timer.start()
             iter_timer.start()

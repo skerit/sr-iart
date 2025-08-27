@@ -100,18 +100,18 @@ path:
 
 # training settings
 train:
-  ema_decay: 0.999
+  ema_decay: 0.99  # Reduced for faster adaptation
   optim_g:
     type: AdamW
-    lr: !!float 2e-5  # Back to original - we have safeguards now
+    lr: !!float 1e-4  # 5x increase - aggressive but needed
     weight_decay: 0.01 # AdamW works better with small weight decay
-    betas: [0.9, 0.99] # Lower beta2 for faster adaptation
+    betas: [0.9, 0.95] # Even lower beta2 for faster adaptation
 
   scheduler:
     type: CosineAnnealingRestartLR
-    periods: [50000]  # Longer period with more data
-    restart_weights: [1]
-    eta_min: !!float 1e-7
+    periods: [5000, 10000, 20000]  # More frequent restarts to escape plateaus
+    restart_weights: [1, 0.5, 0.5]  # Drop LR less on restarts
+    eta_min: !!float 1e-6  # Higher minimum LR
 
   total_iter: 50000  # More iterations with larger dataset
   use_grad_clip: true  # Enable gradient clipping
@@ -124,7 +124,7 @@ train:
   # losses
   # Logging thresholds for debugging
   # Log when any loss exceeds this value
-  high_loss_threshold: 1.2
+  high_loss_threshold: 1.3
   save_high_loss_images: true  # Set to true to also save images for high-loss patches
   
   pixel_opt:
@@ -158,7 +158,7 @@ train:
     type: ConvNextLoss
 
     # Weight of 100.0 returns +/- 0.9 loss
-    loss_weight: 9  # Reduced - was too dominant
+    loss_weight: 8  # Reduced - was too dominant
     model_type: small  # tiny, small, base, or large
     feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
     use_gram: false  # Set to true if you want style transfer effects
@@ -169,7 +169,7 @@ train:
   # LPIPS - human-calibrated perceptual loss (using AlexNet)
   lpips_opt:
     type: LPIPSLoss
-    loss_weight: 0.7  # Drastically reduced - was way too dominant
+    loss_weight: 0.6  # Drastically reduced - was way too dominant
     net_type: alex  # AlexNet - best correlation with human perception
     normalize: true  # Convert [0,1] to [-1,1]
     reduction: mean
