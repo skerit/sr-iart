@@ -500,8 +500,8 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         dataset = dataloader.dataset
         dataset_name = dataset.opt['name']
         
-        # Only save images on first validation or every 100 validations
-        save_img_this_iter = save_img and (current_iter <= 1 or current_iter % 100 == 0)
+        # Save images whenever save_img is true
+        save_img_this_iter = save_img
         
         # Check if metrics are available
         with_metrics = self.opt['val'].get('metrics') is not None
