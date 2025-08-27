@@ -632,5 +632,14 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             
             if save_img_this_iter:
                 logger.info(f'Validation images saved to: {save_folder}')
+        
+        # Clean up GPU memory after validation
+        if hasattr(self, 'lq'):
+            del self.lq
+        if hasattr(self, 'gt'):
+            del self.gt
+        if hasattr(self, 'output'):
+            del self.output
+        torch.cuda.empty_cache()
 
 
