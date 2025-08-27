@@ -1,0 +1,131 @@
+# IART training configuration for DVD→Blu-ray restoration (Video Dataset)
+# Fine-tuning from REDS BI N16 pretrained model
+
+# general settings
+name: IART_DVD_Bluray_video
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    dataroot_gt: datasets/dvd_bluray/gt  # Directory with GT video files
+    dataroot_lq: datasets/dvd_bluray/lq  # Directory with LQ video files
+    meta_info_file: datasets/dvd_bluray/video_metadata.json  # Metadata file created by prepare_dataset.py
+    val_partition: REDS4  # Use REDS4 partition (will be ignored for custom data)
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16  # Number of frames per sequence
+    gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
+    interval_list: [1]
+    random_reverse: false
+    use_hflip: false  # Disable flip to avoid dimension issues
+    use_rot: false    # Disable rotation to avoid dimension issues
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4  # Use multiple workers for parallel video loading
+    batch_size_per_gpu: 1  # Batch size 1 to avoid dimension issues
+    dataset_enlarge_ratio: 10  # Cache more samples in memory
+    prefetch_mode: 'cuda'  # Prefetch to GPU while processing
+    pin_memory: true  # Enable pinned memory for faster GPU transfer
+
+# network structures
+network_g:
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16  # Must match the pretrained model (N16)
+  img_size: 64
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  use_checkpoint: [true, true, true, true]  # Enable gradient checkpointing to save memory
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+  ema_decay: 0.991
+  optim_g:
+    type: Adam
+    lr: !!float 2e-5  # Slightly higher LR with more data
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [50000]  # Longer period with more data
+    restart_weights: [1]
+    eta_min: !!float 1e-7
+
+  total_iter: 50000  # More iterations with larger dataset
+  use_grad_clip: true  # Enable gradient clipping
+  grad_clip_norm: 0.9
+  set_DINO_OOM: true
+  half_precision: true  # Mixed precision training
+  warmup_iter: 100  # Short warmup period
+
+  # losses
+  pixel_opt:
+    type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
+    loss_weight: 1.0
+    reduction: mean
+
+  perceptual_opt:
+    type: PerceptualLoss
+    layer_weights:
+      'conv5_4': 1  
+    vgg_type: vgg19
+    use_input_norm: true
+    range_norm: false
+    perceptual_weight: 0.05  # Lower weight for fine-tuning
+    style_weight: 0
+    criterion: l1  # Use L1 instead of cb
+
+# validation settings (disabled for now)
+val:
+  val_freq: !!float 999999  # Effectively disabled
+  save_img: false
+  grids: false
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim  
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 10  # Print every 10 iterations to see progress
+  save_checkpoint_freq: 100  # Save frequently for video dataset
+  use_tb_logger: true
+  wandb:
+    project: srvideo-original
+    resume_id: srvideo-original
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
