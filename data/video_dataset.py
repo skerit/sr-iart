@@ -83,7 +83,8 @@ class VideoRecurrentDataset(data.Dataset):
             
             # For validation, we want to test multiple sequences from each clip
             # Create entries for different starting positions
-            num_sequences = min(5, max(1, frame_count // self.num_frame))
+            # REDUCED: Only 1 sequence per clip for faster validation
+            num_sequences = 1  # Was: min(5, max(1, frame_count // self.num_frame))
             
             for seq_idx in range(num_sequences):
                 self.data_info['folder'].append(clip_name)
