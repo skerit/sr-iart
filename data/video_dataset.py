@@ -77,7 +77,9 @@ class VideoRecurrentDataset(data.Dataset):
                 - gt: Ground truth frames tensor
                 - key: Sample identifier
         """
-        clip_idx = index % len(self.clips)
+        # Use random clip selection instead of round-robin
+        # This gives better variety when dataset_enlarge_ratio is used
+        clip_idx = np.random.randint(0, len(self.clips))
         clip = self.clips[clip_idx]
         
         # Open video files
