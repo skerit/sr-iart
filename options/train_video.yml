@@ -128,7 +128,7 @@ train:
   # ConvNeXt perceptual loss - more stable than VGG
   convnext_opt:
     type: ConvNextLoss
-    loss_weight: 0.01  # More conservative start without FFT
+    loss_weight: 100.0  # Scaled up to match pixel loss magnitude
     model_type: tiny  # tiny, small, base, or large
     feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
     use_gram: false  # Set to true if you want style transfer effects
