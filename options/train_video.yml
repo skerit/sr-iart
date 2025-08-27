@@ -100,7 +100,7 @@ path:
 
 # training settings
 train:
-  ema_decay: 0.99  # Reduced for faster adaptation
+  ema_decay: 0.9  # Much faster adaptation - appropriate for active learning
   optim_g:
     type: AdamW
     lr: !!float 1e-4  # 5x increase - aggressive but needed
