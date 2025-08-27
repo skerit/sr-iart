@@ -67,6 +67,28 @@ class VideoRecurrentDataset(data.Dataset):
         logger = get_root_logger()
         logger.info(f'Temporal augmentation interval list: [{interval_str}]; '
                     f'random reverse is {self.random_reverse}.')
+        
+        # Create data_info for validation compatibility
+        # BasicSR expects this structure for video validation
+        self.data_info = {
+            'folder': [],  # Folder/clip names
+            'idx': [],     # Frame indices
+            'border': []   # Border frames to ignore
+        }
+        
+        # Populate data_info from clips
+        for clip in self.clips:
+            clip_name = clip['name']
+            frame_count = clip['frame_count']
+            
+            # For validation, we want to test multiple sequences from each clip
+            # Create entries for different starting positions
+            num_sequences = min(5, max(1, frame_count // self.num_frame))
+            
+            for seq_idx in range(num_sequences):
+                self.data_info['folder'].append(clip_name)
+                self.data_info['idx'].append(list(range(self.num_frame)))
+                self.data_info['border'].append(False)  # No border frames
 
     def __getitem__(self, index):
         """Get training sample.
@@ -76,11 +98,29 @@ class VideoRecurrentDataset(data.Dataset):
                 - lq: Low quality frames tensor
                 - gt: Ground truth frames tensor
                 - key: Sample identifier
+                - folder: Clip name (for validation)
         """
-        # Use random clip selection instead of round-robin
-        # This gives better variety when dataset_enlarge_ratio is used
-        clip_idx = np.random.randint(0, len(self.clips))
-        clip = self.clips[clip_idx]
+        # Check if we're in test/validation mode
+        test_mode = hasattr(self, 'opt') and self.opt.get('test_mode', False)
+        
+        if test_mode and index < len(self.data_info['folder']):
+            # Validation mode: use specific clip and frames
+            clip_name = self.data_info['folder'][index]
+            # Find the clip by name
+            clip = None
+            for c in self.clips:
+                if c['name'] == clip_name:
+                    clip = c
+                    break
+            if clip is None:
+                # Fallback to first clip if not found
+                clip = self.clips[0]
+        else:
+            # Training mode: random clip selection
+            # Use random clip selection instead of round-robin
+            # This gives better variety when dataset_enlarge_ratio is used
+            clip_idx = np.random.randint(0, len(self.clips))
+            clip = self.clips[clip_idx]
         
         # Open video files
         gt_path = os.path.join(self.gt_root, clip['gt_video'])
@@ -231,6 +271,7 @@ class VideoRecurrentDataset(data.Dataset):
             'lq': img_lqs,
             'gt': img_gts,
             'key': f"{clip['name']}_{start_frame:08d}",
+            'folder': clip['name'],  # Add folder key for validation
             'crop_coords': {'gt_top': gt_top, 'gt_left': gt_left, 'gt_size': gt_size,
                            'lq_top': lq_top, 'lq_left': lq_left, 'lq_size': lq_size},
             'interval': interval
@@ -238,5 +279,11 @@ class VideoRecurrentDataset(data.Dataset):
 
     def __len__(self):
         """Dataset length is clips * possible starting positions."""
-        # Return a large number to allow many iterations
-        return len(self.clips) * 1000
+        test_mode = hasattr(self, 'opt') and self.opt.get('test_mode', False)
+        
+        if test_mode:
+            # In validation, return actual number of validation sequences
+            return len(self.data_info['folder'])
+        else:
+            # In training, return a large number to allow many iterations
+            return len(self.clips) * 1000
