@@ -1,6 +1,7 @@
 import torch
 import math
 import os
+import cv2
 from collections import OrderedDict
 import torchvision
 from torch.cuda.amp import autocast
@@ -479,5 +480,146 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
+    
+    def dist_validation(self, dataloader, current_iter, tb_logger, save_img):
+        """Custom validation with image saving support.
+        
+        Override BasicSR's validation to allow saving images during training.
+        """
+        import os
+        from collections import Counter
+        from os import path as osp
+        import numpy as np
+        import torch
+        import torchvision
+        from tqdm import tqdm
+        from basicsr.metrics import calculate_metric
+        from basicsr.utils import tensor2img, imwrite
+        from basicsr.utils.dist_util import get_dist_info
+        
+        dataset = dataloader.dataset
+        dataset_name = dataset.opt['name']
+        
+        # Only save images on first validation or every 100 validations
+        save_img_this_iter = save_img and (current_iter <= 1 or current_iter % 100 == 0)
+        
+        # Check if metrics are available
+        with_metrics = self.opt['val'].get('metrics') is not None
+        
+        # Initialize metric results
+        if with_metrics:
+            if not hasattr(self, 'metric_results'):
+                self.metric_results = {}
+                num_frame_each_folder = Counter(dataset.data_info['folder'])
+                for folder, num_frame in num_frame_each_folder.items():
+                    self.metric_results[folder] = torch.zeros(
+                        num_frame, len(self.opt['val']['metrics']), dtype=torch.float32, device='cuda')
+            # Initialize best metric results
+            self._initialize_best_metric_results(dataset_name)
+            
+            # Zero metric results
+            for _, tensor in self.metric_results.items():
+                tensor.zero_()
+        
+        # Get rank info for distributed training
+        rank, world_size = get_dist_info()
+        
+        # Process validation data
+        metric_data = dict()
+        num_folders = len(dataset)
+        
+        if rank == 0:
+            pbar = tqdm(total=num_folders, unit='folder', desc='Validation')
+        
+        # Limit validation to first 5 clips for speed during testing
+        max_folders = min(5, num_folders) if current_iter <= 10 else num_folders
+        
+        for idx in range(max_folders):
+            val_data = dataset[idx]
+            folder = val_data['folder']
+            
+            # Add batch dimension
+            val_data['lq'].unsqueeze_(0)
+            val_data['gt'].unsqueeze_(0)
+            self.feed_data(val_data)
+            val_data['lq'].squeeze_(0)
+            val_data['gt'].squeeze_(0)
+            
+            # Test (forward pass)
+            self.test()
+            visuals = self.get_current_visuals()
+            
+            # Process output
+            result_img = tensor2img([visuals['result']])  # uint8, bgr
+            gt_img = tensor2img([visuals['gt']])  # uint8, bgr
+            lq_img = tensor2img([visuals['lq']])  # uint8, bgr
+            
+            # Calculate metrics
+            if with_metrics:
+                for metric_idx, opt_ in enumerate(self.opt['val']['metrics'].values()):
+                    metric_type = opt_['type']
+                    metric_result = calculate_metric(
+                        {'img': result_img, 'img2': gt_img}, opt_)
+                    metric_data[f'{folder}_{metric_type}'] = metric_result
+                    
+                    # Store in metric_results
+                    if hasattr(self, 'metric_results'):
+                        self.metric_results[folder][0, metric_idx] += metric_result
+            
+            # Save images
+            if save_img_this_iter:
+                if self.opt['val'].get('grids', False):
+                    # Create comparison grid: LQ | Output | GT
+                    # All images are already uint8 BGR numpy arrays
+                    h, w = gt_img.shape[:2]
+                    lq_resized = cv2.resize(lq_img, (w, h), interpolation=cv2.INTER_CUBIC)
+                    
+                    # Create grid
+                    grid = np.concatenate([lq_resized, result_img, gt_img], axis=1)
+                    
+                    # Save grid
+                    save_folder = osp.join(self.opt['path']['visualization'], 
+                                         f'val_images_iter_{current_iter:06d}')
+                    os.makedirs(save_folder, exist_ok=True)
+                    save_path = osp.join(save_folder, f'{folder}_grid.png')
+                    imwrite(grid, save_path)
+                else:
+                    # Save individual images
+                    save_folder = osp.join(self.opt['path']['visualization'], 
+                                         f'val_images_iter_{current_iter:06d}')
+                    os.makedirs(save_folder, exist_ok=True)
+                    
+                    # Save LQ, output, GT
+                    imwrite(lq_img, osp.join(save_folder, f'{folder}_lq.png'))
+                    imwrite(result_img, osp.join(save_folder, f'{folder}_output.png'))
+                    imwrite(gt_img, osp.join(save_folder, f'{folder}_gt.png'))
+            
+            if rank == 0:
+                pbar.update(1)
+                pbar.set_postfix(**{k: f'{v:.3f}' for k, v in metric_data.items() 
+                                   if folder in k})
+        
+        if rank == 0:
+            pbar.close()
+        
+        # Calculate average metrics
+        if with_metrics:
+            self._log_validation_metric_values(current_iter, dataset_name, tb_logger)
+            
+            # Log average metrics
+            avg_metrics = {}
+            for metric_type in self.opt['val']['metrics'].keys():
+                values = [v for k, v in metric_data.items() if metric_type in k]
+                if values:
+                    avg_metrics[metric_type] = sum(values) / len(values)
+            
+            logger = get_root_logger()
+            log_str = f'Validation {dataset_name} - Iter {current_iter}: '
+            for metric, value in avg_metrics.items():
+                log_str += f'{metric}: {value:.4f}  '
+            logger.info(log_str)
+            
+            if save_img_this_iter:
+                logger.info(f'Validation images saved to: {save_folder}')
 
 
