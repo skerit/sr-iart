@@ -59,6 +59,32 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 logger.info(f"FFT Loss initialized with weight {fft_opt.get('loss_weight', 1.0)}")
             else:
                 self.cri_fft = None
+            
+            # Initialize ConvNeXt loss if configured
+            if train_opt.get('convnext_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom ConvNeXt loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.convnext_loss import ConvNextLoss
+                
+                convnext_opt = train_opt['convnext_opt']
+                self.cri_convnext = ConvNextLoss(
+                    loss_weight=convnext_opt.get('loss_weight', 0.01),
+                    model_type=convnext_opt.get('model_type', 'tiny'),
+                    feature_layers=convnext_opt.get('feature_layers', None),
+                    use_gram=convnext_opt.get('use_gram', False),
+                    layer_weight_decay=convnext_opt.get('layer_weight_decay', 0.9),
+                    reduction=convnext_opt.get('reduction', 'mean'),
+                    input_range=convnext_opt.get('input_range', (0, 1))
+                ).to(self.device)
+                logger.info(f"ConvNeXt Loss initialized with weight {convnext_opt.get('loss_weight', 0.01)} "
+                           f"using {convnext_opt.get('model_type', 'tiny')} model")
+            else:
+                self.cri_convnext = None
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
@@ -242,6 +268,31 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 l_fft = self.cri_fft(self.output, self.gt)
                 l_total += l_fft
                 loss_dict['l_fft'] = l_fft
+            
+            # ConvNeXt perceptual loss for better stability than VGG
+            if hasattr(self, 'cri_convnext') and self.cri_convnext:
+                # Reshape 5D video tensors to 4D for ConvNeXt loss
+                if self.output.dim() == 5:
+                    b, t, c, h, w = self.output.shape
+                    output_4d = self.output.view(b * t, c, h, w)
+                    gt_4d = self.gt.view(b * t, c, h, w)
+                else:
+                    output_4d = self.output
+                    gt_4d = self.gt
+                
+                # Skip ConvNeXt loss for very dark patches to avoid instability
+                output_mean = output_4d.mean()
+                gt_mean = gt_4d.mean()
+                if output_mean > 0.02 and gt_mean > 0.02:  # Only if not too dark
+                    l_convnext = self.cri_convnext(output_4d, gt_4d)
+                else:
+                    l_convnext = torch.tensor(0.0, device=self.device)
+                    logger = get_root_logger()
+                    logger.info(f"Skipped ConvNeXt loss for dark patch (output mean: {output_mean:.4f}, gt mean: {gt_mean:.4f})")
+                
+                l_total += l_convnext
+                loss_dict['l_convnext'] = l_convnext
+            
             scaler.scale(l_total).backward()
             
             # Always unscale before gradient operations

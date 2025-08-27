@@ -120,10 +120,21 @@ train:
   #   criterion: l1  # Use L1 instead of cb
   
   # FFT loss for preserving high-frequency details (sharpness, grain)
-  fft_opt:
-    type: FFTLoss  # We'll implement this
-    loss_weight: 0.05  # Start conservative
+  #fft_opt:
+  #  type: FFTLoss  # We'll implement this
+  #  loss_weight: 0.05  # Start conservative
+  #  reduction: mean
+
+  # ConvNeXt perceptual loss - more stable than VGG
+  convnext_opt:
+    type: ConvNextLoss
+    loss_weight: 0.01  # More conservative start without FFT
+    model_type: tiny  # tiny, small, base, or large
+    feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
+    use_gram: false  # Set to true if you want style transfer effects
+    layer_weight_decay: 0.9  # How much to decay weights for deeper layers
     reduction: mean
+    input_range: [0, 1]  # Our tensors are normalized to [0, 1]
 
 # validation settings (disabled for now)
 val:
