@@ -150,7 +150,7 @@ train:
   fft_opt:
     type: FFTLoss  # We'll implement this
     # Weight of 60 is about 1.0
-    loss_weight: 10  # Increased - was barely contributing
+    loss_weight: 4
     reduction: mean
 
   # ConvNeXt perceptual loss - more stable than VGG
@@ -158,7 +158,7 @@ train:
     type: ConvNextLoss
 
     # Weight of 100.0 returns +/- 0.9 loss
-    loss_weight: 10.0  # Reduced - was too dominant
+    loss_weight: 9  # Reduced - was too dominant
     model_type: small  # tiny, small, base, or large
     feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
     use_gram: false  # Set to true if you want style transfer effects
@@ -169,7 +169,7 @@ train:
   # LPIPS - human-calibrated perceptual loss (using AlexNet)
   lpips_opt:
     type: LPIPSLoss
-    loss_weight: 1.0  # Drastically reduced - was way too dominant
+    loss_weight: 0.7  # Drastically reduced - was way too dominant
     net_type: alex  # AlexNet - best correlation with human perception
     normalize: true  # Convert [0,1] to [-1,1]
     reduction: mean
