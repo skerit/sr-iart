@@ -55,11 +55,64 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 fft_opt = train_opt['fft_opt']
                 self.cri_fft = FFTLoss(
                     loss_weight=fft_opt.get('loss_weight', 1.0),
-                    reduction=fft_opt.get('reduction', 'mean')
+                    reduction=fft_opt.get('reduction', 'mean'),
+                    highpass_cutoff=fft_opt.get('highpass_cutoff', 0.0),
+                    highpass_type=fft_opt.get('highpass_type', 'gaussian')
                 ).to(self.device)
-                logger.info(f"FFT Loss initialized with weight {fft_opt.get('loss_weight', 1.0)}")
+                logger.info(f"FFT Loss initialized with weight {fft_opt.get('loss_weight', 1.0)}, "
+                           f"highpass_cutoff {fft_opt.get('highpass_cutoff', 0.0)}")
             else:
                 self.cri_fft = None
+            
+            # Initialize High-frequency FFT loss if configured (separate from regular FFT)
+            if train_opt.get('fft_high_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom FFT loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.fft_loss import FFTLoss
+                
+                fft_high_opt = train_opt['fft_high_opt']
+                self.cri_fft_high = FFTLoss(
+                    loss_weight=fft_high_opt.get('loss_weight', 1.0),
+                    reduction=fft_high_opt.get('reduction', 'mean'),
+                    highpass_cutoff=fft_high_opt.get('highpass_cutoff', 0.3),  # Default to 30% cutoff
+                    highpass_type=fft_high_opt.get('highpass_type', 'gaussian')
+                ).to(self.device)
+                logger.info(f"High-freq FFT Loss initialized with weight {fft_high_opt.get('loss_weight', 1.0)}, "
+                           f"highpass_cutoff {fft_high_opt.get('highpass_cutoff', 0.3)}")
+            else:
+                self.cri_fft_high = None
+            
+            # Initialize Low-frequency FFT loss if configured (for color/brightness matching)
+            if train_opt.get('fft_low_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom FFT loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.fft_loss import FFTLoss
+                
+                fft_low_opt = train_opt['fft_low_opt']
+                # For low-pass, we invert the mask logic
+                # We'll need to add a lowpass mode to FFTLoss
+                self.cri_fft_low = FFTLoss(
+                    loss_weight=fft_low_opt.get('loss_weight', 1.0),
+                    reduction=fft_low_opt.get('reduction', 'mean'),
+                    highpass_cutoff=fft_low_opt.get('lowpass_cutoff', 0.3),  # Use as lowpass
+                    highpass_type=fft_low_opt.get('filter_type', 'gaussian')
+                ).to(self.device)
+                # Mark this as a low-pass filter
+                self.cri_fft_low.is_lowpass = True
+                logger.info(f"Low-freq FFT Loss initialized with weight {fft_low_opt.get('loss_weight', 1.0)}, "
+                           f"lowpass_cutoff {fft_low_opt.get('lowpass_cutoff', 0.3)}")
+            else:
+                self.cri_fft_low = None
             
             # Initialize ConvNeXt loss if configured
             if train_opt.get('convnext_opt'):
@@ -305,6 +358,18 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 l_fft = self.cri_fft(self.output, self.gt)
                 l_total += l_fft
                 loss_dict['l_fft'] = l_fft
+            
+            # High-frequency FFT loss (for sharpness and details)
+            if hasattr(self, 'cri_fft_high') and self.cri_fft_high:
+                l_fft_high = self.cri_fft_high(self.output, self.gt)
+                l_total += l_fft_high
+                loss_dict['l_fft_high'] = l_fft_high
+            
+            # Low-frequency FFT loss (for color and brightness matching)
+            if hasattr(self, 'cri_fft_low') and self.cri_fft_low:
+                l_fft_low = self.cri_fft_low(self.output, self.gt)
+                l_total += l_fft_low
+                loss_dict['l_fft_low'] = l_fft_low
             
             # ConvNeXt perceptual loss for better stability than VGG
             if hasattr(self, 'cri_convnext') and self.cri_convnext:
