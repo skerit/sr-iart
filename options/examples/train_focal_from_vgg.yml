@@ -1,0 +1,101 @@
+# Training from VGG checkpoint with Focal Frequency Loss
+# Transitions from Pixel+VGG to Pixel+FFL to remove checkerboard artifacts
+
+general:
+  task_name: IARTModel
+  model_type: RecurrentMixedPrecisionModel
+  num_gpu: 1
+  manual_seed: 0
+
+datasets:
+  train:
+    name: DVD_Bluray_Train
+    type: IARTRecurrentDataset
+    dataroot_gt: /path/to/bluray/train
+    dataroot_lq: /path/to/dvd/train
+    num_frame: 15
+    gt_size: 256
+    interval_list: [1]
+    random_reverse: false
+    use_hflip: true
+    use_rot: true
+    batch_size: 4
+    num_worker: 8
+
+  val:
+    name: DVD_Bluray_Val
+    type: VideoTestDataset
+    dataroot_gt: /path/to/bluray/val
+    dataroot_lq: /path/to/dvd/val
+    num_frame: 15
+
+network_g:
+  type: IART
+  upscale: 1
+  enc_channels: [64, 128]
+  middle_channels: 256
+  dec_channels: [128, 64]
+  rec_channels: 256
+  use_amp: true
+
+path:
+  # START FROM YOUR VGG CHECKPOINT
+  pretrain_network_g: experiments/YOUR_VGG_TRAINING/models/net_g_latest.pth
+  strict_load_g: true
+  resume_state: ~
+
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: Adam
+    lr: !!float 5e-5  # Lower LR since we're fine-tuning
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [250000]
+    restart_weights: [1]
+    eta_min: !!float 1e-7
+
+  total_iter: 100000  # Shorter - just removing artifacts
+  warmup_iter: -1
+
+  # Losses
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+
+  # Start with FFL only - no VGG to avoid checkerboard
+  focal_freq_opt:
+    type: FocalFrequencyLoss
+    loss_weight: 1.5  # Start moderate
+    alpha: 1.0  # Standard focusing
+    patch_factor: 1
+    ave_spectrum: false
+    log_matrix: true  # Smooth transitions
+    batch_matrix: false  # Per-sample adaptation
+
+  # NO perceptual_opt - removing VGG entirely
+
+val:
+  val_freq: !!float 5e3
+  save_img: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
