@@ -62,6 +62,10 @@ path:
 
 # training settings
 train:
+
+  # Gradient accumulation to simulate larger batch size
+  gradient_accumulation_steps: 8
+
   ema_decay: 0.999
   optim_g:
     type: Adam

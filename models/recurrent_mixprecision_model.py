@@ -286,8 +286,13 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 logger.warning('Train all the parameters.')
                 self.net_g.requires_grad_(True)
 
-        # update the gradient when forward 4 times
-        self.optimizer_g.zero_grad()
+        # Gradient accumulation settings
+        accumulation_steps = self.opt['train'].get('gradient_accumulation_steps', 1)
+        
+        # Only zero gradients at the beginning of accumulation cycle
+        # current_iter starts at 1, so we need to adjust for modulo
+        if (current_iter - 1) % accumulation_steps == 0:
+            self.optimizer_g.zero_grad()
 
         # Disable autocast for float32 training (more stable but uses 2x memory)
         use_mixed_precision = self.opt['train'].get('half_precision', True)
@@ -311,7 +316,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 # Clean up to prevent OOM
                 del self.output
                 torch.cuda.empty_cache()
-                self.optimizer_g.zero_grad()
+                # Don't zero_grad() here - preserve accumulated gradients
                 return
             
             # Clamp output to valid range to prevent pure black
@@ -325,7 +330,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 # Clean up and skip
                 del self.output
                 torch.cuda.empty_cache()
-                self.optimizer_g.zero_grad()
+                # Don't zero_grad() here - preserve accumulated gradients
                 return
             
             output_mean = self.output.mean().item()
@@ -335,7 +340,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 # Clean up and skip
                 del self.output
                 torch.cuda.empty_cache()
-                self.optimizer_g.zero_grad()
+                # Don't zero_grad() here - preserve accumulated gradients
                 return
             
             skip_because_too_dark = False
@@ -440,56 +445,77 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 l_total += l_lpips
                 loss_dict['l_lpips'] = l_lpips
             
+            # Scale the loss by accumulation steps to maintain effective learning rate
+            l_total = l_total / accumulation_steps
+            
+            # Backward pass (accumulates gradients)
             scaler.scale(l_total).backward()
             
-            # Always unscale before gradient operations
-            scaler.unscale_(self.optimizer_g)
-            
-            # Check gradient norm BEFORE clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=float('inf'))
-            
-            # Log gradient norm and learning rate periodically
-            if self.current_iter % 50 == 0:
-                logger = get_root_logger()
-                current_lr = self.optimizer_g.param_groups[0]['lr']
-                logger.info(f"Iter {self.current_iter}: grad_norm={grad_norm:.4f}, lr={current_lr:.2e}")
-            
-            # Skip update if gradients are bad
-            if torch.isnan(grad_norm) or grad_norm > 1000:  # Increased threshold
-                logger = get_root_logger()
-                logger.warning(f"Skipping update - bad gradients detected! Norm: {grad_norm:.2f}")
-                self.optimizer_g.zero_grad()
-                scaler.update()  # Still need to update scaler
+            # Only perform optimizer step after accumulation_steps iterations
+            if (self.current_iter) % accumulation_steps == 0:
+                # Always unscale before gradient operations
+                scaler.unscale_(self.optimizer_g)
                 
-                # Track bad updates
-                if not hasattr(self, 'bad_update_count'):
+                # Gradient clipping and norm calculation
+                if self.opt['train'].get('use_grad_clip', False):
+                    max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
+                    # clip_grad_norm_ returns the norm before clipping
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
+                else:
+                    # Just compute norm for logging without clipping
+                    total_norm = 0.0
+                    for p in self.net_g.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                    grad_norm = total_norm ** 0.5
+                
+                # Log gradient norm and learning rate periodically
+                if self.current_iter % 50 == 0:
+                    logger = get_root_logger()
+                    current_lr = self.optimizer_g.param_groups[0]['lr']
+                    logger.info(f"Iter {self.current_iter}: grad_norm={grad_norm:.4f}, lr={current_lr:.2e}, "
+                               f"gradient_accumulation={accumulation_steps}")
+                
+                # Skip update if gradients are bad
+                if torch.isnan(grad_norm) or grad_norm > 1000:  # Increased threshold
+                    logger = get_root_logger()
+                    logger.warning(f"Skipping update - bad gradients detected! Norm: {grad_norm:.2f}")
+                    self.optimizer_g.zero_grad()
+                    scaler.update()  # Still need to update scaler
+                    
+                    # Track bad updates
+                    if not hasattr(self, 'bad_update_count'):
+                        self.bad_update_count = 0
+                    self.bad_update_count += 1
+                    
+                    # Reset optimizer if too many bad updates
+                    if self.bad_update_count >= 3:
+                        logger.warning("Too many bad updates - resetting optimizer state!")
+                        self.optimizer_g.state.clear()
+                        self.bad_update_count = 0
+                    return
+                
+                # Reset bad update counter on successful update
+                if hasattr(self, 'bad_update_count'):
                     self.bad_update_count = 0
-                self.bad_update_count += 1
                 
-                # Reset optimizer if too many bad updates
-                if self.bad_update_count >= 3:
-                    logger.warning("Too many bad updates - resetting optimizer state!")
+                # Periodic optimizer reset to prevent long-term accumulation
+                # Reset every 5000 iterations (adjust as needed)
+                if self.current_iter > 0 and self.current_iter % 5000 == 0:
+                    logger = get_root_logger()
+                    logger.info(f"Periodic optimizer reset at iteration {self.current_iter}")
                     self.optimizer_g.state.clear()
-                    self.bad_update_count = 0
-                return
+                
+                # Actually update weights (gradient clipping already done above)
+                scaler.step(self.optimizer_g)
+            else:
+                # Log that we're accumulating gradients
+                if self.current_iter % 100 == 0:
+                    logger = get_root_logger()
+                    logger.debug(f"Iter {self.current_iter}: Accumulating gradients ({self.current_iter % accumulation_steps}/{accumulation_steps})")
             
-            # Reset bad update counter on successful update
-            if hasattr(self, 'bad_update_count'):
-                self.bad_update_count = 0
-            
-            # Periodic optimizer reset to prevent long-term accumulation
-            # Reset every 5000 iterations (adjust as needed)
-            if self.current_iter > 0 and self.current_iter % 5000 == 0:
-                logger = get_root_logger()
-                logger.info(f"Periodic optimizer reset at iteration {self.current_iter}")
-                self.optimizer_g.state.clear()
-            
-            # Gradient clipping to prevent NaN
-            if self.opt['train'].get('use_grad_clip', False):
-                max_norm = self.opt['train'].get('grad_clip_norm', 0.5)
-                torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), max_norm=max_norm)
-            
-            scaler.step(self.optimizer_g)
+            # CRITICAL: Update scaler on EVERY iteration to track gradient health
             scaler.update()
 
             # l_total.backward()
