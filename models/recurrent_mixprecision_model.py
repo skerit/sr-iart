@@ -461,32 +461,99 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                         
                         # Save the images (handle video tensors)
                         if self.lq.dim() == 5:  # Video tensor (B, T, C, H, W)
-                            # Take middle frame for saving
+                            # Save middle frame with original naming for compatibility
                             mid_frame = self.lq.shape[1] // 2
                             lq_save = self.lq[:, mid_frame, :, :, :]
                             gt_save = self.gt[:, mid_frame, :, :, :]
                             output_save = self.output[:, mid_frame, :, :, :]
+                            
+                            # Save middle frame with original filenames
+                            torchvision.utils.save_image(
+                                lq_save, 
+                                os.path.join(debug_dir, f"{base_filename}_lq.png"),
+                                normalize=False
+                            )
+                            torchvision.utils.save_image(
+                                gt_save,
+                                os.path.join(debug_dir, f"{base_filename}_gt.png"),
+                                normalize=False
+                            )
+                            torchvision.utils.save_image(
+                                output_save,
+                                os.path.join(debug_dir, f"{base_filename}_output.png"),
+                                normalize=False
+                            )
+                            
+                            # Additionally, save ALL frames for debugging temporal alignment
+                            frames_dir = os.path.join(debug_dir, f"{base_filename}_frames")
+                            os.makedirs(frames_dir, exist_ok=True)
+                            
+                            num_frames = self.lq.shape[1]
+                            for frame_idx in range(num_frames):
+                                # Save each frame individually
+                                torchvision.utils.save_image(
+                                    self.lq[:, frame_idx, :, :, :],
+                                    os.path.join(frames_dir, f"frame_{frame_idx:02d}_lq.png"),
+                                    normalize=False
+                                )
+                                torchvision.utils.save_image(
+                                    self.gt[:, frame_idx, :, :, :],
+                                    os.path.join(frames_dir, f"frame_{frame_idx:02d}_gt.png"),
+                                    normalize=False
+                                )
+                                torchvision.utils.save_image(
+                                    self.output[:, frame_idx, :, :, :],
+                                    os.path.join(frames_dir, f"frame_{frame_idx:02d}_output.png"),
+                                    normalize=False
+                                )
+                            
+                            # Create a grid showing all frames for quick visual inspection
+                            # Concatenate all output frames horizontally
+                            import torch
+                            output_frames = []
+                            for i in range(num_frames):
+                                output_frames.append(self.output[:, i, :, :, :])
+                            output_grid = torch.cat(output_frames, dim=3)  # Concatenate along width
+                            torchvision.utils.save_image(
+                                output_grid,
+                                os.path.join(frames_dir, "all_output_frames.png"),
+                                normalize=False
+                            )
+                            
+                            # Create comparison grid for each frame
+                            for i in range(num_frames):
+                                frame_comparison = torch.cat([
+                                    self.lq[:, i, :, :, :],
+                                    self.output[:, i, :, :, :],
+                                    self.gt[:, i, :, :, :]
+                                ], dim=3)  # LQ | Output | GT horizontally
+                                torchvision.utils.save_image(
+                                    frame_comparison,
+                                    os.path.join(frames_dir, f"frame_{i:02d}_comparison.png"),
+                                    normalize=False
+                                )
+                                
                         else:
                             lq_save = self.lq
                             gt_save = self.gt
                             output_save = self.output
-                        
-                        # Save LQ, GT, and output
-                        torchvision.utils.save_image(
-                            lq_save, 
-                            os.path.join(debug_dir, f"{base_filename}_lq.png"),
-                            normalize=False
-                        )
-                        torchvision.utils.save_image(
-                            gt_save,
-                            os.path.join(debug_dir, f"{base_filename}_gt.png"),
-                            normalize=False
-                        )
-                        torchvision.utils.save_image(
-                            output_save,
-                            os.path.join(debug_dir, f"{base_filename}_output.png"),
-                            normalize=False
-                        )
+                            
+                            # Save regular images
+                            torchvision.utils.save_image(
+                                lq_save, 
+                                os.path.join(debug_dir, f"{base_filename}_lq.png"),
+                                normalize=False
+                            )
+                            torchvision.utils.save_image(
+                                gt_save,
+                                os.path.join(debug_dir, f"{base_filename}_gt.png"),
+                                normalize=False
+                            )
+                            torchvision.utils.save_image(
+                                output_save,
+                                os.path.join(debug_dir, f"{base_filename}_output.png"),
+                                normalize=False
+                            )
                         
                         logger.info(f"Saved debug images to {debug_dir}/{base_filename}_*.png")
 
@@ -565,10 +632,18 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 self.test()
                 visuals = self.get_current_visuals()
                 
-                # Process output
-                result_img = tensor2img([visuals['result']])  # uint8, bgr
-                gt_img = tensor2img([visuals['gt']])  # uint8, bgr
-                lq_img = tensor2img([visuals['lq']])  # uint8, bgr
+                # Process output - handle video tensors properly
+                # For video tensors, extract a specific frame for metrics
+                if len(visuals['result'].shape) == 5:  # [B, T, C, H, W]
+                    # Use middle frame for consistency with grid display
+                    mid_frame = visuals['result'].shape[1] // 2
+                    result_img = tensor2img([visuals['result'][0, mid_frame]])  # uint8, bgr
+                    gt_img = tensor2img([visuals['gt'][0, mid_frame]])  # uint8, bgr
+                    lq_img = tensor2img([visuals['lq'][0, mid_frame]])  # uint8, bgr
+                else:
+                    result_img = tensor2img([visuals['result']])  # uint8, bgr
+                    gt_img = tensor2img([visuals['gt']])  # uint8, bgr
+                    lq_img = tensor2img([visuals['lq']])  # uint8, bgr
                 
                 # Calculate metrics
                 if with_metrics:

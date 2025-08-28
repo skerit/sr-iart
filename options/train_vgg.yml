@@ -82,6 +82,9 @@ train:
   half_precision: true  # Mixed precision training
   warmup_iter: 100  # Short warmup period
 
+  high_loss_threshold: 0.15
+  save_high_loss_images: true  # Set to true to also save images for high-loss patches
+
   # losses
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
