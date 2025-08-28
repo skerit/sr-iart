@@ -190,6 +190,33 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                            f"alpha {focal_opt.get('alpha', 1.0)}")
             else:
                 self.cri_focal = None
+            
+            # Initialize FDL (Feature Distance Loss) if configured
+            if train_opt.get('fdl_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom FDL Loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.fdl_loss import FDLLoss
+                
+                fdl_opt = train_opt['fdl_opt']
+                self.cri_fdl = FDLLoss(
+                    loss_weight=fdl_opt.get('loss_weight', 1.0),
+                    model=fdl_opt.get('model', 'VGG'),
+                    patch_size=fdl_opt.get('patch_size', 5),
+                    stride=fdl_opt.get('stride', 1),
+                    num_proj=fdl_opt.get('num_proj', 256),
+                    phase_weight=fdl_opt.get('phase_weight', 1.0),
+                    reduction=fdl_opt.get('reduction', 'mean')
+                ).to(self.device)
+                logger.info(f"FDL Loss initialized with {fdl_opt.get('model', 'VGG')} backbone, "
+                           f"weight {fdl_opt.get('loss_weight', 1.0)}, "
+                           f"phase_weight {fdl_opt.get('phase_weight', 1.0)}")
+            else:
+                self.cri_fdl = None
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
@@ -425,6 +452,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 l_focal = self.cri_focal(self.output, self.gt)
                 l_total += l_focal
                 loss_dict['l_focal'] = l_focal
+            
+            # FDL (Feature Distance Loss) - robust to misalignment
+            if hasattr(self, 'cri_fdl') and self.cri_fdl:
+                l_fdl = self.cri_fdl(self.output, self.gt)
+                l_total += l_fdl
+                loss_dict['l_fdl'] = l_fdl
             
             # LPIPS perceptual loss - human-calibrated
             if hasattr(self, 'cri_lpips') and self.cri_lpips:

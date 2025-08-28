@@ -1,0 +1,190 @@
+# Training using Pixel Loss & FDL (Feature Distance Loss)
+# FDL is robust to misalignment between input and ground truth
+
+# general settings
+name: IART_DVD_Bluray_FDL
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/video_metadata.json
+    val_partition: REDS4
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16  # Number of frames per sequence
+    gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
+    interval_list: [1]
+
+    # Augment training inputs
+    random_reverse: true
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4  # Use multiple workers for parallel video loading
+    batch_size_per_gpu: 1  # Batch size 1 to avoid dimension issues
+    dataset_enlarge_ratio: 10  # Cache more samples in memory
+    prefetch_mode: 'cuda'  # Prefetch to GPU while processing
+    pin_memory: true  # Enable pinned memory for faster GPU transfer
+
+  # Validation dataset - use a subset of videos or specific test clips
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/val_metadata.json  # Separate validation metadata
+    test_mode: True  # No augmentation for validation
+    io_backend:
+      type: disk
+    
+    num_frame: 16  # Same as training
+    gt_size: 512  # Use 512x512 patches for faster validation (was full frame)
+    interval_list: [1]  # Fixed interval for consistent validation
+
+    # Don't augment validation inputs
+    random_reverse: false
+    use_hflip: false
+    use_rot: false
+    
+    # Validation data loader
+    use_shuffle: false  # Don't shuffle validation
+    num_worker_per_gpu: 2
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1  # No enlargement for validation
+    pin_memory: true
+
+# network structures
+network_g:
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16  # Must match the pretrained model (N16)
+  img_size: 64
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  use_checkpoint: [true, true, true, true]  # Enable gradient checkpointing to save memory
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+
+  # Gradient accumulation to simulate larger batch size
+  gradient_accumulation_steps: 8
+
+  ema_decay: 0.99
+  
+  optim_g:
+    type: Adam
+    lr: !!float 2e-5
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [50000]
+    restart_weights: [1]
+    eta_min: !!float 1e-7
+
+  # Total amount of iterations
+  total_iter: 50000
+
+  # Enable gradient clipping
+  use_grad_clip: true
+  grad_clip_norm: 0.9
+
+  # Mixed precision training
+  half_precision: true
+
+  # Amount of warmup iterations
+  warmup_iter: 100
+
+  # OOM thing
+  set_DINO_OOM: true
+  
+  high_loss_threshold: 0.15
+  save_high_loss_images: true
+
+  # losses
+  pixel_opt:
+    type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
+    loss_weight: 1.0
+    reduction: mean
+
+  # FDL - Feature Distance Loss (robust to misalignment)
+  fdl_opt:
+    type: FDLLoss
+    loss_weight: 1.0  # Start with equal weight to pixel loss
+    
+    # Feature extractor backbone
+    model: VGG  # 'VGG' or 'ResNet' - VGG is faster, ResNet is more accurate
+    
+    # SWD (Sliced Wasserstein Distance) parameters
+    patch_size: 5  # Size of patches for projection
+    stride: 1  # Stride for patch extraction
+    num_proj: 256  # Number of random projections (higher = more accurate but slower)
+    
+    # Phase weight - controls importance of phase vs amplitude
+    # Lower values (0.5-0.8) = more robust to misalignment
+    # Higher values (1.0-1.5) = more detail preservation
+    phase_weight: 0.8  # Reduce phase weight for better misalignment handling
+    
+    reduction: mean
+
+# validation settings
+val:
+  # Validate every 500 iterations
+  val_freq: 500
+
+  # Save the images
+  save_img: true
+
+  # Also generate a comparison grid
+  grids: true
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim  
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+dist_params:
+  backend: nccl
+  port: 29500
