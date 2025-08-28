@@ -509,7 +509,6 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                             
                             # Create a grid showing all frames for quick visual inspection
                             # Concatenate all output frames horizontally
-                            import torch
                             output_frames = []
                             for i in range(num_frames):
                                 output_frames.append(self.output[:, i, :, :, :])
