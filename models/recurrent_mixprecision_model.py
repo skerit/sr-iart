@@ -4,7 +4,7 @@ import os
 import cv2
 from collections import OrderedDict
 import torchvision
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 from basicsr.archs import build_network
@@ -214,7 +214,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         # Disable autocast for float32 training (more stable but uses 2x memory)
         use_mixed_precision = self.opt['train'].get('half_precision', True)
         
-        with autocast(enabled=use_mixed_precision):
+        with autocast('cuda', enabled=use_mixed_precision):
             self.output = self.net_g(self.lq)
             
             # Check for NaN immediately after model forward pass
