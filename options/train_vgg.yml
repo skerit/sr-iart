@@ -26,9 +26,11 @@ datasets:
     num_frame: 16  # Number of frames per sequence
     gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
     interval_list: [1]
-    random_reverse: false
-    use_hflip: false  # Disable flip to avoid dimension issues
-    use_rot: false    # Disable rotation to avoid dimension issues
+
+    # Augment training inputs
+    random_reverse: true
+    use_hflip: true
+    use_rot: true
 
     # data loader
     use_shuffle: true
@@ -52,9 +54,11 @@ datasets:
     num_frame: 16  # Same as training
     gt_size: 512  # Use 512x512 patches for faster validation (was full frame)
     interval_list: [1]  # Fixed interval for consistent validation
-    random_reverse: true  # No augmentation
-    use_hflip: true
-    use_rot: true
+
+    # Don't augment validation inputs
+    random_reverse: false
+    use_hflip: false
+    use_rot: false
     
     # Validation data loader
     use_shuffle: false  # Don't shuffle validation
