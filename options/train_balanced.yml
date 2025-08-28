@@ -1,0 +1,156 @@
+# Balanced training configuration - avoiding both blur AND blocky artifacts
+# general settings
+name: IART_DVD_Bluray_balanced
+model_type: VideoRecurrentModel
+scale: 4
+num_gpu: auto  
+manual_seed: 0
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    lq_path: /mnt/mercer/projects/srdata/dataset_video/lq
+    gt_path: /mnt/mercer/projects/srdata/dataset_video/gt
+    num_frame: 16  # Matches pre-trained model
+    select_frame_method: random  # Random frame selection
+    padding: reflection_circle
+    scale: 4
+    
+    # Dataset settings
+    video_metadata_file: /mnt/mercer/projects/srdata/dataset_video/video_metadata.json
+    train_metadata_file: /mnt/mercer/projects/srdata/dataset_video/train_metadata.json
+    val_metadata_file: /mnt/mercer/projects/srdata/dataset_video/val_metadata.json
+    
+    # Data loader
+    num_worker_per_gpu: 12
+    batch_size_per_gpu: 1
+    persistent_workers: true
+    prefetch_mode: cpu
+    prefetch: 4
+    drop_last: true
+    pin_memory: true
+
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    lq_path: /mnt/mercer/projects/srdata/dataset_video/lq
+    gt_path: /mnt/mercer/projects/srdata/dataset_video/gt
+    num_frame: 16
+    select_frame_method: center  # Use center frames for validation
+    padding: reflection_circle
+    scale: 4
+    test_mode: true  # Enable test mode for validation
+    
+    # Point to validation metadata
+    video_metadata_file: /mnt/mercer/projects/srdata/dataset_video/video_metadata.json
+    val_metadata_file: /mnt/mercer/projects/srdata/dataset_video/val_metadata.json
+
+# network structures
+network_g:
+  type: IART
+  c_s2att: 40
+  down_s2att: 1
+  fifo_size_m: 16
+  input_size: 16
+  n_hashes: 2
+  n_levels: 4
+  reduction: 8
+  return_overflow: true
+  spynet_path: pretrained_models/flownet/spynet.pth
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
+  strict_load_g: true
+  resume_state: ~
+  visualization: experiments/IART_DVD_Bluray_balanced
+
+# training settings
+train:
+  ema_decay: 0.95  # Moderate EMA for responsiveness
+  optim_g:
+    type: AdamW
+    lr: !!float 5e-5  # Higher LR to ensure learning
+    weight_decay: 0.01
+    betas: [0.9, 0.95]  # Lower beta2 for faster adaptation
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [10000, 20000]  # More frequent restarts
+    restart_weights: [1, 0.5]
+    eta_min: !!float 5e-7
+
+  total_iter: 50000
+  use_grad_clip: true
+  grad_clip_norm: 5.0
+  set_DINO_OOM: true
+  half_precision: true
+  warmup_iter: 100
+
+  # LOSS CONFIGURATION - Balanced for sharpness without artifacts
+  
+  # Primary: Pixel loss for accuracy
+  pixel_opt:
+    type: CharbonnierLoss
+    loss_weight: 20.0  # High weight to enforce pixel matching
+    reduction: mean
+
+  # Secondary: FFT for natural frequency preservation (anti-blur AND anti-blocky)
+  fft_opt:
+    type: FFTLoss
+    loss_weight: 15.0  # Strong weight to preserve frequencies naturally
+    reduction: mean
+
+  # Tertiary: Light perceptual guidance
+  # Option A: Very light ConvNeXt (modern, less artifacty than VGG)
+  convnext_opt:
+    type: ConvNextLoss
+    loss_weight: 1.0  # Very light touch - just guidance
+    model_type: tiny  # Use tiny model for speed and less interference
+    feature_layers: [2, 4]  # Only early-mid layers
+    layer_weight_decay: 0.7
+    reduction: mean
+    input_range: [0, 1]
+
+  # Option B: OR use VGG with different layers to avoid blocky artifacts
+  # perceptual_opt:
+  #   type: PerceptualLoss
+  #   layer_weights:
+  #     'conv2_2': 0.5  # Earlier layer - less blocky
+  #     'conv4_4': 0.5  # Later layer - more semantic
+  #   vgg_type: vgg19
+  #   use_input_norm: true
+  #   perceptual_weight: 0.003  # Very light
+  #   style_weight: 0
+
+# validation settings
+val:
+  val_freq: 500
+  save_img: true
+  grids: true
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: 500
+  use_tb_logger: true
+  wandb:
+    project: IART-DVD-Bluray-balanced
+    resume_id: ~
+
+dist_params:
+  backend: nccl
+  port: 29500

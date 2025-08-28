@@ -15,10 +15,10 @@ datasets:
   train:
     name: DVDBlurayVideoDataset
     type: VideoRecurrentDataset
-    dataroot_gt: datasets/dvd_bluray/gt  # Directory with GT video files
-    dataroot_lq: datasets/dvd_bluray/lq  # Directory with LQ video files
-    meta_info_file: datasets/dvd_bluray/video_metadata.json  # Metadata file created by prepare_dataset.py
-    val_partition: REDS4  # Use REDS4 partition (will be ignored for custom data)
+    dataroot_gt: datasets/dvd_bluray/gt
+    dataroot_lq: datasets/dvd_bluray/lq
+    meta_info_file: datasets/dvd_bluray/video_metadata.json
+    val_partition: REDS4
     test_mode: False
     io_backend:
       type: disk
