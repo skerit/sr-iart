@@ -509,14 +509,15 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 
                 # Actually update weights (gradient clipping already done above)
                 scaler.step(self.optimizer_g)
+                # Update scaler after step (tracks gradient health for next iteration)
+                scaler.update()
             else:
                 # Log that we're accumulating gradients
                 if self.current_iter % 100 == 0:
                     logger = get_root_logger()
                     logger.debug(f"Iter {self.current_iter}: Accumulating gradients ({self.current_iter % accumulation_steps}/{accumulation_steps})")
-            
-            # CRITICAL: Update scaler on EVERY iteration to track gradient health
-            scaler.update()
+                # During accumulation, we don't call scaler.update() because
+                # no inf checks were performed (no unscale or step happened)
 
             # l_total.backward()
             # self.optimizer_g.step()
