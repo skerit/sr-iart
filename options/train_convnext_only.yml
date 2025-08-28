@@ -116,6 +116,10 @@ train:
   # Short warmup period
   warmup_iter: 100
 
+  # Save images of high-loss iterations
+  high_loss_threshold: 0.9
+  save_high_loss_images: true
+
   # losses
   pixel_opt:
     type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
@@ -126,7 +130,7 @@ train:
     type: ConvNextLoss
     loss_weight: 8
     model_type: base
-    feature_layers: [0, 1, 2, 3]
+    feature_layers: [0, 1]
     layer_weight_decay: 0.7
     reduction: mean
     input_range: [0, 1]
