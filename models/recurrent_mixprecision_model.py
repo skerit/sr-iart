@@ -521,10 +521,27 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                             
                             # Create comparison grid for each frame
                             for i in range(num_frames):
+                                # Upscale LQ to match GT/output size for comparison
+                                lq_frame = self.lq[:, i, :, :, :]
+                                output_frame = self.output[:, i, :, :, :]
+                                gt_frame = self.gt[:, i, :, :, :]
+                                
+                                # Upscale LQ using bilinear interpolation to match GT size
+                                if lq_frame.shape[-2:] != gt_frame.shape[-2:]:
+                                    import torch.nn.functional as F
+                                    lq_frame_upscaled = F.interpolate(
+                                        lq_frame, 
+                                        size=gt_frame.shape[-2:], 
+                                        mode='bilinear', 
+                                        align_corners=False
+                                    )
+                                else:
+                                    lq_frame_upscaled = lq_frame
+                                
                                 frame_comparison = torch.cat([
-                                    self.lq[:, i, :, :, :],
-                                    self.output[:, i, :, :, :],
-                                    self.gt[:, i, :, :, :]
+                                    lq_frame_upscaled,
+                                    output_frame,
+                                    gt_frame
                                 ], dim=3)  # LQ | Output | GT horizontally
                                 torchvision.utils.save_image(
                                     frame_comparison,
