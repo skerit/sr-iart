@@ -15,10 +15,10 @@ datasets:
   train:
     name: DVDBlurayVideoDataset
     type: VideoRecurrentDataset
-    dataroot_gt: datasets/dvd_bluray/gt  # Directory with GT video files
-    dataroot_lq: datasets/dvd_bluray/lq  # Directory with LQ video files
-    meta_info_file: datasets/dvd_bluray/video_metadata.json  # Metadata file created by prepare_dataset.py
-    val_partition: REDS4  # Use REDS4 partition (will be ignored for custom data)
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/video_metadata.json
+    val_partition: REDS4
     test_mode: False
     io_backend:
       type: disk
@@ -37,6 +37,31 @@ datasets:
     dataset_enlarge_ratio: 10  # Cache more samples in memory
     prefetch_mode: 'cuda'  # Prefetch to GPU while processing
     pin_memory: true  # Enable pinned memory for faster GPU transfer
+
+  # Validation dataset - use a subset of videos or specific test clips
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/val_metadata.json  # Separate validation metadata
+    test_mode: True  # No augmentation for validation
+    io_backend:
+      type: disk
+    
+    num_frame: 16  # Same as training
+    gt_size: 512  # Use 512x512 patches for faster validation (was full frame)
+    interval_list: [1]  # Fixed interval for consistent validation
+    random_reverse: false  # No augmentation
+    use_hflip: false
+    use_rot: false
+    
+    # Validation data loader
+    use_shuffle: false  # Don't shuffle validation
+    num_worker_per_gpu: 2
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1  # No enlargement for validation
+    pin_memory: true
 
 # network structures
 network_g:
