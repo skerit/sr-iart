@@ -74,7 +74,9 @@ class FocalFrequencyLoss(nn.Module):
             x = x.unsqueeze(1)
         
         # Apply 2D FFT (real-to-complex)
-        freq = torch.fft.fft2(x, norm='ortho')
+        # Cast to float32 for FFT to avoid ComplexHalf warning with AMP
+        x_float32 = x.float() if x.dtype == torch.float16 else x
+        freq = torch.fft.fft2(x_float32, norm='ortho')
         
         # Convert complex to real representation: [..., 2] for (real, imag)
         freq = torch.stack([freq.real, freq.imag], dim=-1)
