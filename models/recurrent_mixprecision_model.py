@@ -165,6 +165,31 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                            f"using {lpips_opt.get('net_type', 'alex')} network")
             else:
                 self.cri_lpips = None
+            
+            # Initialize Focal Frequency Loss if configured
+            if train_opt.get('focal_freq_opt'):
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # Import our custom Focal Frequency Loss
+                import sys
+                import os
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from losses.focal_frequency_loss import FocalFrequencyLoss
+                
+                focal_opt = train_opt['focal_freq_opt']
+                self.cri_focal = FocalFrequencyLoss(
+                    loss_weight=focal_opt.get('loss_weight', 1.0),
+                    alpha=focal_opt.get('alpha', 1.0),
+                    patch_factor=focal_opt.get('patch_factor', 1),
+                    ave_spectrum=focal_opt.get('ave_spectrum', False),
+                    log_matrix=focal_opt.get('log_matrix', False),
+                    batch_matrix=focal_opt.get('batch_matrix', False)
+                ).to(self.device)
+                logger.info(f"Focal Frequency Loss initialized with weight {focal_opt.get('loss_weight', 1.0)}, "
+                           f"alpha {focal_opt.get('alpha', 1.0)}")
+            else:
+                self.cri_focal = None
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
@@ -389,6 +414,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 
                 l_total += l_convnext
                 loss_dict['l_convnext'] = l_convnext
+            
+            # Focal Frequency Loss - adaptively focuses on hard frequencies
+            if hasattr(self, 'cri_focal') and self.cri_focal:
+                l_focal = self.cri_focal(self.output, self.gt)
+                l_total += l_focal
+                loss_dict['l_focal'] = l_focal
             
             # LPIPS perceptual loss - human-calibrated
             if hasattr(self, 'cri_lpips') and self.cri_lpips:

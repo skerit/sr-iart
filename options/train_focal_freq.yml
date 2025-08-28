@@ -1,0 +1,170 @@
+# IART training with Focal Frequency Loss
+# Adaptively focuses on hard-to-synthesize frequencies
+
+# general settings
+name: IART_DVD_Bluray_video
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/video_metadata.json
+    val_partition: REDS4
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16
+    gt_size: 256
+    interval_list: [1]
+
+    random_reverse: true
+    use_hflip: true
+    use_rot: true
+
+    use_shuffle: true
+    num_worker_per_gpu: 4
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 10
+    prefetch_mode: 'cuda'
+    pin_memory: true
+
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/val_metadata.json
+    test_mode: True
+    io_backend:
+      type: disk
+    
+    num_frame: 16
+    gt_size: 512
+    interval_list: [1]
+
+    random_reverse: false
+    use_hflip: false
+    use_rot: false
+    
+    use_shuffle: false
+    num_worker_per_gpu: 2
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1
+    pin_memory: true
+
+# network structures
+network_g:
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16
+  img_size: 64
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  use_checkpoint: [true, true, true, true]
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+  ema_decay: 0.95
+  optim_g:
+    type: AdamW
+    lr: !!float 5e-5
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [50000]
+    restart_weights: [1]
+    eta_min: !!float 1e-7
+
+  total_iter: 50000
+  use_grad_clip: true
+  grad_clip_norm: 0.9
+  set_DINO_OOM: true
+  half_precision: true
+  warmup_iter: 100
+
+  high_loss_threshold: 0.15
+  save_high_loss_images: true
+
+  # losses
+  
+  # Pixel loss for basic reconstruction
+  pixel_opt:
+    type: CharbonnierLoss
+    loss_weight: 10.0
+    reduction: mean
+
+  # VGG perceptual for texture
+  perceptual_opt:
+    type: PerceptualLoss
+    layer_weights:
+      'conv5_4': 1
+    vgg_type: vgg19
+    use_input_norm: true
+    range_norm: false
+    perceptual_weight: 0.03
+    style_weight: 0
+    criterion: l1
+
+  # Focal Frequency Loss - the star of the show!
+  focal_freq_opt:
+    loss_weight: 2.0  # Start moderate, adjust based on results
+    alpha: 1.0  # Focusing strength (1.0 = balanced, >1 = stronger focus on hard frequencies)
+    patch_factor: 1  # Use full image (set to 2 or 4 for patch-based)
+    ave_spectrum: false  # Don't average across batch
+    log_matrix: false  # Try true if training unstable
+    batch_matrix: false  # Per-sample normalization
+
+# validation settings
+val:
+  val_freq: 500
+  save_img: true
+  grids: true
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 10
+  save_checkpoint_freq: 100
+  use_tb_logger: true
+  wandb:
+    project: srvideo-focal-freq
+    resume_id: srvideo-focal-freq
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
