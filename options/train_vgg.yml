@@ -104,9 +104,14 @@ train:
 
 # validation settings (disabled for now)
 val:
-  val_freq: !!float 999999  # Effectively disabled
-  save_img: false
-  grids: false
+  # Validate every 500 iterations
+  val_freq: 500
+
+  # Save the images
+  save_img: true
+
+  # Also generate a comparison grid
+  grids: true
   max_minibatch: 8
 
   metrics:
