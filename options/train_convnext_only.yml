@@ -26,9 +26,9 @@ datasets:
     num_frame: 16  # Number of frames per sequence
     gt_size: 256   # Patch size for training - 64x64 LQ after 4x downscale
     interval_list: [1]
-    random_reverse: false
-    use_hflip: false  # Disable flip to avoid dimension issues
-    use_rot: false    # Disable rotation to avoid dimension issues
+    random_reverse: true
+    use_hflip: true  # Disable flip to avoid dimension issues
+    use_rot: true    # Disable rotation to avoid dimension issues
 
     # data loader
     use_shuffle: true

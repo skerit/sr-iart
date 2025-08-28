@@ -52,9 +52,9 @@ datasets:
     num_frame: 16  # Same as training
     gt_size: 512  # Use 512x512 patches for faster validation (was full frame)
     interval_list: [1]  # Fixed interval for consistent validation
-    random_reverse: false  # No augmentation
-    use_hflip: false
-    use_rot: false
+    random_reverse: true  # No augmentation
+    use_hflip: true
+    use_rot: true
     
     # Validation data loader
     use_shuffle: false  # Don't shuffle validation
