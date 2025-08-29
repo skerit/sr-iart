@@ -11,14 +11,61 @@ from torchvision import models as tv
 from basicsr.utils.registry import LOSS_REGISTRY
 from torch.utils.checkpoint import checkpoint
 from torch.cuda.amp import autocast
+import logging
+
+# Setup logger
+logger = logging.getLogger(__name__)
+
+# Numerical stability constants
+NORM_EPS = 1e-8  # Epsilon for projection normalization to avoid division by zero
+DEGEN_FEAT_THRESH = 1e-8  # Threshold to detect degenerate (near-zero) features  
+FFT_STABILITY_EPS = 1e-10  # Epsilon to prevent log(0) or angle of zero vector in FFT
+FALLBACK_LOSS_VALUE = 0.001  # Small non-zero loss to maintain gradient flow when all layers fail
 
 
-class VGGFeatureExtractor(nn.Module):
+class BaseFeatureExtractor(nn.Module):
+    """Base class for feature extractors with shared normalization logic."""
+    
+    def __init__(self, requires_grad=False, use_input_norm=True, range_norm=False):
+        super().__init__()
+        
+        if not requires_grad:
+            for param in self.parameters():
+                param.requires_grad = False
+        
+        self.use_input_norm = use_input_norm
+        self.range_norm = range_norm
+        
+        if self.use_input_norm:
+            # ImageNet normalization - for images in [0, 1] range
+            self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
+            self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
+    
+    @autocast(enabled=False)  # Force float32 for pretrained network stability
+    def normalize_input(self, x):
+        """Apply normalization to input tensor."""
+        # Ensure float32 precision
+        x = x.float()
+        
+        # Optional: Convert from [-1, 1] to [0, 1] if needed
+        if self.range_norm:
+            x = (x + 1) / 2
+        
+        # Apply ImageNet normalization if enabled
+        if self.use_input_norm:
+            x = (x - self.mean) / self.std
+        
+        return x
+
+
+class VGGFeatureExtractor(BaseFeatureExtractor):
     """VGG19 feature extractor for FDL loss."""
     
     def __init__(self, requires_grad=False, pretrained=True, use_input_norm=True, range_norm=False):
-        super().__init__()
+        # Initialize base class first
+        super().__init__(requires_grad, use_input_norm, range_norm)
         
+        # Now set up VGG model
         vgg_pretrained_features = tv.vgg19(pretrained=pretrained).features
         
         # Create stages for different feature levels
@@ -40,35 +87,12 @@ class VGGFeatureExtractor(nn.Module):
         for x in range(27, 36):
             self.stage5.add_module(str(x), vgg_pretrained_features[x])
         
-        if not requires_grad:
-            for param in self.parameters():
-                param.requires_grad = False
-        
-        self.use_input_norm = use_input_norm
-        self.range_norm = range_norm
-        
-        if self.use_input_norm:
-            # ImageNet normalization - for images in [0, 1] range
-            self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
-            self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
-        
         # Channel dimensions for each stage
         self.chns = [64, 128, 256, 512, 512]
     
-    @autocast(enabled=False)  # Force float32 for pretrained network stability
     def forward(self, x):
-        # Ensure float32 precision
-        x = x.float()
-        
-        # Optional: Convert from [-1, 1] to [0, 1] if needed
-        if self.range_norm:
-            x = (x + 1) / 2
-        
-        # Apply ImageNet normalization if enabled
-        if self.use_input_norm:
-            # This expects x to be roughly in [0, 1] range
-            # But doesn't enforce it with clamping
-            x = (x - self.mean) / self.std
+        # Use base class normalization
+        x = self.normalize_input(x)
         
         # Extract features at different levels
         h = self.stage1(x)
@@ -89,12 +113,14 @@ class VGGFeatureExtractor(nn.Module):
         return [h_relu1_2, h_relu2_2, h_relu3_3, h_relu4_3, h_relu5_3]
 
 
-class ResNetFeatureExtractor(nn.Module):
+class ResNetFeatureExtractor(BaseFeatureExtractor):
     """ResNet101 feature extractor for FDL loss - Fixed version."""
     
     def __init__(self, requires_grad=False, pretrained=True, use_input_norm=True, range_norm=False):
-        super().__init__()
+        # Initialize base class first
+        super().__init__(requires_grad, use_input_norm, range_norm)
         
+        # Now set up ResNet model
         model = tv.resnet101(pretrained=pretrained)
         model.eval()
         
@@ -114,33 +140,12 @@ class ResNetFeatureExtractor(nn.Module):
             model.layer3,
         )
         
-        if not requires_grad:
-            for param in self.parameters():
-                param.requires_grad = False
-        
-        self.use_input_norm = use_input_norm
-        self.range_norm = range_norm
-        
-        if self.use_input_norm:
-            # ImageNet normalization
-            self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
-            self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
-        
         # Channel dimensions for each stage
         self.chns = [64, 256, 512, 1024]
     
-    @autocast(enabled=False)  # Force float32 for pretrained network stability
     def forward(self, x):
-        # Ensure float32 precision
-        x = x.float()
-        
-        # Optional: Convert from [-1, 1] to [0, 1] if needed
-        if self.range_norm:
-            x = (x + 1) / 2
-        
-        # Apply ImageNet normalization if enabled
-        if self.use_input_norm:
-            x = (x - self.mean) / self.std
+        # Use base class normalization
+        x = self.normalize_input(x)
         
         # Extract features at different levels
         h = self.stage1(x)
@@ -185,7 +190,7 @@ class FDLLoss(nn.Module):
                  num_proj=256,
                  phase_weight=1.0,
                  reduction='mean',
-                 chunk_size=16,
+                 chunk_size=64,  # Increased from 8/16 for better performance
                  scale_factor=1.0,
                  frame_chunk_size=4,
                  use_input_norm=True,
@@ -224,7 +229,7 @@ class FDLLoss(nn.Module):
             rand = torch.randn(num_proj, self.feature_extractor.chns[i], patch_size, patch_size)
             # Normalize projections with epsilon for numerical stability
             rand_norm = rand.view(rand.shape[0], -1).norm(dim=1, keepdim=True)
-            rand = rand.view(rand.shape[0], -1) / (rand_norm + 1e-8)
+            rand = rand.view(rand.shape[0], -1) / (rand_norm + NORM_EPS)
             rand = rand.view(num_proj, self.feature_extractor.chns[i], patch_size, patch_size)
             self.register_buffer(f"rand_{i}", rand)
     
@@ -323,7 +328,7 @@ class FDLLoss(nn.Module):
                 continue
             
             # Check for degenerate features (all zeros or very small)
-            if feat_pred.abs().mean() < 1e-8 or feat_target.abs().mean() < 1e-8:
+            if feat_pred.abs().mean() < DEGEN_FEAT_THRESH or feat_target.abs().mean() < DEGEN_FEAT_THRESH:
                 if self.skip_nan_layers:
                     skipped_layers.append(i)
                     continue
@@ -334,9 +339,8 @@ class FDLLoss(nn.Module):
                 fft_target = torch.fft.fftn(feat_target, dim=(-2, -1))
                 
                 # Add small epsilon to prevent numerical issues in angle computation
-                eps = 1e-10
-                fft_pred_stable = fft_pred + eps
-                fft_target_stable = fft_target + eps
+                fft_pred_stable = fft_pred + FFT_STABILITY_EPS
+                fft_target_stable = fft_target + FFT_STABILITY_EPS
                 
                 # Separate amplitude and phase
                 pred_amp = torch.abs(fft_pred_stable)
@@ -382,16 +386,16 @@ class FDLLoss(nn.Module):
             auto_skips = [i for i in skipped_layers if i not in self.skip_layers]
             
             if auto_skips and configured_skips:
-                print(f"FDL: Skipped layers {configured_skips} (configured) and {auto_skips} (numerical issues)")
+                logger.warning(f"FDL: Skipped layers {configured_skips} (configured) and {auto_skips} (numerical issues)")
             elif auto_skips:
-                print(f"FDL: Skipped layers {auto_skips} due to numerical issues")
+                logger.warning(f"FDL: Skipped layers {auto_skips} due to numerical issues")
             # Don't log configured skips unless there are also auto skips
         
         # Check if any valid layers were processed
         if not has_valid_layer:
-            print("Warning: All FDL layers had issues, returning small loss")
+            logger.warning("All FDL layers had issues, returning small loss")
             # Return small non-zero loss to maintain gradient flow
-            return torch.tensor(0.001, device=pred.device, dtype=pred.dtype, requires_grad=True)
+            return torch.tensor(FALLBACK_LOSS_VALUE, device=pred.device, dtype=pred.dtype, requires_grad=True)
         
         # Return raw loss (weight and scale factor applied in forward())
         return loss
