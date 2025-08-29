@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models as tv
 from basicsr.utils.registry import LOSS_REGISTRY
+from torch.utils.checkpoint import checkpoint
 
 
 class VGGFeatureExtractor(nn.Module):
@@ -147,15 +148,18 @@ class FDLLoss(nn.Module):
                  model='VGG',
                  patch_size=5,
                  stride=1,
-                 num_proj=256,
+                 num_proj=256,  # Full projections - memory safe with chunking
                  phase_weight=1.0,
-                 reduction='mean'):
+                 reduction='mean',
+                 chunk_size=16):  # Process projections in chunks
         super().__init__()
         
         self.loss_weight = loss_weight
         self.reduction = reduction
         self.phase_weight = phase_weight
         self.stride = stride
+        self.num_proj = num_proj
+        self.chunk_size = min(chunk_size, num_proj)  # Ensure chunk size doesn't exceed num_proj
         
         # Initialize feature extractor
         if model == 'VGG':
@@ -174,6 +178,7 @@ class FDLLoss(nn.Module):
     
     def compute_swd(self, x, y, idx):
         """Compute Sliced Wasserstein Distance between feature maps.
+        Memory-efficient version that processes projections in chunks.
         
         Args:
             x, y: Feature tensors of shape (N, C, H, W)
@@ -181,19 +186,32 @@ class FDLLoss(nn.Module):
         """
         rand = getattr(self, f"rand_{idx}")
         
-        # Project features using random filters
-        proj_x = F.conv2d(x, rand, stride=self.stride)
-        proj_x = proj_x.reshape(proj_x.shape[0], proj_x.shape[1], -1)
+        B = x.shape[0]
+        distance = torch.zeros(B, device=x.device)
         
-        proj_y = F.conv2d(y, rand, stride=self.stride)
-        proj_y = proj_y.reshape(proj_y.shape[0], proj_y.shape[1], -1)
-        
-        # Sort projections (key for Wasserstein distance)
-        proj_x, _ = torch.sort(proj_x, dim=-1)
-        proj_y, _ = torch.sort(proj_y, dim=-1)
-        
-        # Compute mean absolute difference
-        distance = torch.abs(proj_x - proj_y).mean([1, 2])
+        # Process projections in chunks to reduce memory usage
+        for i in range(0, self.num_proj, self.chunk_size):
+            end_idx = min(i + self.chunk_size, self.num_proj)
+            rand_chunk = rand[i:end_idx]
+            
+            # Project features using random filters for this chunk
+            proj_x = F.conv2d(x, rand_chunk, stride=self.stride)
+            proj_x = proj_x.reshape(B, end_idx - i, -1)
+            
+            proj_y = F.conv2d(y, rand_chunk, stride=self.stride)
+            proj_y = proj_y.reshape(B, end_idx - i, -1)
+            
+            # Sort projections (key for Wasserstein distance)
+            # Use in-place operations to save memory
+            proj_x = proj_x.sort(dim=-1)[0]
+            proj_y = proj_y.sort(dim=-1)[0]
+            
+            # Compute mean absolute difference for this chunk
+            chunk_distance = torch.abs(proj_x - proj_y).mean([1, 2])
+            distance += chunk_distance * (end_idx - i) / self.num_proj
+            
+            # Explicitly delete intermediate tensors to free memory
+            del proj_x, proj_y, chunk_distance
         
         return distance
     

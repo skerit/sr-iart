@@ -1,0 +1,209 @@
+# IART training configuration for DVD→Blu-ray restoration (Video Dataset)
+# Fine-tuning from REDS BI N16 pretrained model
+
+# general settings
+name: IART_COMBINED
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/video_metadata.json
+    val_partition: REDS4
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16  # Number of frames per sequence
+
+    # Patch size for training
+    # 320 uses about 22GB of VRAM
+    # The input will use 80x80 patches (after 4x downscale)
+    gt_size: 320
+
+    # Use random (1, 2 or 3) interval per iteration
+    interval_list: [1, 2, 3]
+
+    # Randomly reverse the clips
+    random_reverse: true
+
+    # Randomly apply horizontal flips
+    use_hflip: true
+
+    # Randomly apply rotations
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4  # Use multiple workers for parallel video loading
+    batch_size_per_gpu: 1  # Batch size 1 to avoid dimension issues
+    dataset_enlarge_ratio: 10  # Cache more samples in memory
+    prefetch_mode: 'cuda'  # Prefetch to GPU while processing
+    pin_memory: true  # Enable pinned memory for faster GPU transfer
+
+  # Validation dataset - use a subset of videos or specific test clips
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/val_metadata.json  # Separate validation metadata
+    test_mode: True  # No augmentation for validation
+    io_backend:
+      type: disk
+    
+    num_frame: 16  # Same as training
+    gt_size: 512  # Use 512x512 patches for faster validation (was full frame)
+    interval_list: [1]  # Fixed interval for consistent validation
+    random_reverse: false  # No augmentation
+    use_hflip: false
+    use_rot: false
+    
+    # Validation data loader
+    use_shuffle: false  # Don't shuffle validation
+    num_worker_per_gpu: 2
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1  # No enlargement for validation
+    pin_memory: true
+
+# network structures
+network_g:
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16  # Must match the pretrained model (N16)
+  img_size: 64
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  use_checkpoint: [true, true, true, true]  # Enable gradient checkpointing to save memory
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
+
+# path
+path:
+  pretrain_network_g: experiments/pretrained_models/IART_REDS_BI_N16.pth
+  strict_load_g: true
+  resume_state: ~
+  visualization: experiments/IART_DVD_Bluray_video  # Directory for debug outputs
+
+# training settings
+train:
+
+  # Gradient accumulation to simulate larger batch size
+  gradient_accumulation_steps: 8
+
+  ema_decay: 0.9  # Much faster adaptation - appropriate for active learning
+  optim_g:
+    type: AdamW
+    lr: !!float 1e-4  # 5x increase - aggressive but needed
+    weight_decay: 0.01 # AdamW works better with small weight decay
+    betas: [0.9, 0.95] # Even lower beta2 for faster adaptation
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [5000, 10000, 20000]  # More frequent restarts to escape plateaus
+    restart_weights: [1, 0.5, 0.5]  # Drop LR less on restarts
+    eta_min: !!float 1e-6  # Higher minimum LR
+
+  total_iter: 50000  # More iterations with larger dataset
+  use_grad_clip: true  # Enable gradient clipping
+  grad_clip_norm: 5.0  # Relaxed clipping to allow larger updates
+  # accumulation_steps: 1  # Disabled - apply gradients immediately
+  set_DINO_OOM: true
+  half_precision: true  # Mixed precision training
+  warmup_iter: 100  # Short warmup period
+
+  # losses
+  # Logging thresholds for debugging
+  # Log when any loss exceeds this value
+  high_loss_threshold: 1.3
+  save_high_loss_images: true  # Set to true to also save images for high-loss patches
+  
+  pixel_opt:
+    type: CharbonnierLoss  # Standard Charbonnier loss (smooth L1)
+
+    # Weight of 25 returns +/- 1.0
+    loss_weight: 1.0
+    reduction: mean
+
+  perceptual_opt:
+    type: PerceptualLoss
+    layer_weights:
+      'conv5_4': 1  
+    vgg_type: vgg19
+    use_input_norm: true
+    range_norm: false
+    perceptual_weight: 0.1  # Lower weight for fine-tuning
+    style_weight: 0
+    criterion: l1  # Use L1 instead of cb
+  
+  # FFT loss for preserving high-frequency details (sharpness, grain)
+  fft_opt:
+    type: FFTLoss  # We'll implement this
+    # Weight of 60 is about 1.0
+    loss_weight: 4
+    reduction: mean
+
+  # ConvNeXt perceptual loss - more stable than VGG
+  convnext_opt:
+    type: ConvNextLoss
+
+    # Weight of 100.0 returns +/- 0.9 loss
+    loss_weight: 8  # Reduced - was too dominant
+    model_type: small  # tiny, small, base, or large
+    feature_layers: [0, 2, 4, 6]  # Early-to-mid layers for stability
+    use_gram: false  # Set to true if you want style transfer effects
+    layer_weight_decay: 0.9  # How much to decay weights for deeper layers
+    reduction: mean
+    input_range: [0, 1]  # Our tensors are normalized to [0, 1]
+
+  # LPIPS - human-calibrated perceptual loss (using AlexNet)
+  lpips_opt:
+    type: LPIPSLoss
+    loss_weight: 0.6  # Drastically reduced - was way too dominant
+    net_type: alex  # AlexNet - best correlation with human perception
+    normalize: true  # Convert [0,1] to [-1,1]
+    reduction: mean
+
+# validation settings
+val:
+  val_freq: 500  # Validate every 500 iterations
+  save_img: true  # Custom implementation will save images
+  grids: true  # Will create comparison grids
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false  # Use RGB, not just Y channel
+    ssim:
+      type: calculate_ssim  
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 10  # Print every 10 iterations to see progress
+  save_checkpoint_freq: 100  # Save frequently for video dataset
+  use_tb_logger: true
+  wandb:
+    project: srvideo-dvd-bluray-3
+    resume_id: srvideo-dvd-bluray-3
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

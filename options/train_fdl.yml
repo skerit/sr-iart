@@ -145,7 +145,7 @@ train:
     # SWD (Sliced Wasserstein Distance) parameters
     patch_size: 5  # Size of patches for projection
     stride: 1  # Stride for patch extraction
-    num_proj: 256  # Number of random projections (higher = more accurate but slower)
+    num_proj: 256  # Full projections for better accuracy (memory safe with chunking)
     
     # Phase weight - controls importance of phase vs amplitude
     # Lower values (0.5-0.8) = more robust to misalignment
@@ -153,6 +153,9 @@ train:
     phase_weight: 0.8  # Reduce phase weight for better misalignment handling
     
     reduction: mean
+    
+    # Memory optimization parameters
+    chunk_size: 16  # Process projections in chunks to save memory
 
 # validation settings
 val:
