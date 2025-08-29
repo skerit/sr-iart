@@ -155,7 +155,8 @@ train:
     reduction: mean
     
     # Memory optimization parameters
-    chunk_size: 16  # Process projections in chunks to save memory
+    chunk_size: 8  # Process SWD projections in chunks (for sorting)
+    frame_chunk_size: 4  # Process video frames in chunks (for VGG feature extraction)
     
     # Scale factor to match pixel loss magnitude
     # Original FDL sums 5 layers, producing values ~50-100x larger than pixel loss

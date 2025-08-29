@@ -159,7 +159,8 @@ class FDLLoss(nn.Module):
                  phase_weight=1.0,
                  reduction='mean',
                  chunk_size=16,  # Process projections in chunks
-                 scale_factor=1.0):  # Configurable scale factor
+                 scale_factor=1.0,  # Configurable scale factor
+                 frame_chunk_size=4):  # Process video frames in chunks
         super().__init__()
         
         self.loss_weight = loss_weight
@@ -169,6 +170,7 @@ class FDLLoss(nn.Module):
         self.num_proj = num_proj
         self.chunk_size = min(chunk_size, num_proj)  # Ensure chunk size doesn't exceed num_proj
         self.scale_factor = scale_factor
+        self.frame_chunk_size = frame_chunk_size  # For memory-efficient video processing
         
         # Initialize feature extractor
         if model == 'VGG':
@@ -236,15 +238,35 @@ class FDLLoss(nn.Module):
         Returns:
             FDL loss value
         """
-        # Handle video tensors
+        # Handle video tensors - process in smaller chunks to save memory
         if pred.dim() == 5:  # (B, T, C, H, W)
             b, t, c, h, w = pred.shape
-            pred = pred.view(b * t, c, h, w)
-            target = target.view(b * t, c, h, w)
-        
-        # Extract features
-        pred_features = self.feature_extractor(pred)
-        target_features = self.feature_extractor(target)
+            # Process frames in chunks to reduce memory usage
+            all_pred_features = []
+            all_target_features = []
+            
+            for i in range(0, t, self.frame_chunk_size):
+                end_idx = min(i + self.frame_chunk_size, t)
+                pred_chunk = pred[:, i:end_idx].reshape(-1, c, h, w)
+                target_chunk = target[:, i:end_idx].reshape(-1, c, h, w)
+                
+                # Extract features for this chunk
+                pred_feat_chunk = self.feature_extractor(pred_chunk)
+                target_feat_chunk = self.feature_extractor(target_chunk)
+                
+                all_pred_features.append(pred_feat_chunk)
+                all_target_features.append(target_feat_chunk)
+            
+            # Concatenate features from all chunks
+            pred_features = []
+            target_features = []
+            for layer_idx in range(len(all_pred_features[0])):
+                pred_features.append(torch.cat([chunk[layer_idx] for chunk in all_pred_features], dim=0))
+                target_features.append(torch.cat([chunk[layer_idx] for chunk in all_target_features], dim=0))
+        else:
+            # Extract features normally for images
+            pred_features = self.feature_extractor(pred)
+            target_features = self.feature_extractor(target)
         
         loss = 0.0
         has_valid_layer = False  # Track if we have at least one valid layer
