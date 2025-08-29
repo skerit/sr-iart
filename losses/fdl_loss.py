@@ -241,32 +241,32 @@ class FDLLoss(nn.Module):
         # Handle video tensors - process in smaller chunks to save memory
         if pred.dim() == 5:  # (B, T, C, H, W)
             b, t, c, h, w = pred.shape
-            # Process frames in chunks to reduce memory usage
-            all_pred_features = []
-            all_target_features = []
+            total_loss = 0.0
+            num_chunks = 0
             
+            # Process frames in chunks and compute loss per chunk
             for i in range(0, t, self.frame_chunk_size):
                 end_idx = min(i + self.frame_chunk_size, t)
                 pred_chunk = pred[:, i:end_idx].reshape(-1, c, h, w)
                 target_chunk = target[:, i:end_idx].reshape(-1, c, h, w)
                 
-                # Extract features for this chunk
-                pred_feat_chunk = self.feature_extractor(pred_chunk)
-                target_feat_chunk = self.feature_extractor(target_chunk)
-                
-                all_pred_features.append(pred_feat_chunk)
-                all_target_features.append(target_feat_chunk)
+                # Compute FDL loss for this chunk
+                chunk_loss = self._compute_fdl_loss(pred_chunk, target_chunk)
+                total_loss += chunk_loss
+                num_chunks += 1
             
-            # Concatenate features from all chunks
-            pred_features = []
-            target_features = []
-            for layer_idx in range(len(all_pred_features[0])):
-                pred_features.append(torch.cat([chunk[layer_idx] for chunk in all_pred_features], dim=0))
-                target_features.append(torch.cat([chunk[layer_idx] for chunk in all_target_features], dim=0))
+            # Average loss across chunks
+            return (total_loss / num_chunks) * self.loss_weight * self.scale_factor
         else:
             # Extract features normally for images
-            pred_features = self.feature_extractor(pred)
-            target_features = self.feature_extractor(target)
+            loss = self._compute_fdl_loss(pred, target)
+            return loss * self.loss_weight * self.scale_factor
+    
+    def _compute_fdl_loss(self, pred, target):
+        """Compute FDL loss for a batch of frames/images."""
+        # Extract features
+        pred_features = self.feature_extractor(pred)
+        target_features = self.feature_extractor(target)
         
         loss = 0.0
         has_valid_layer = False  # Track if we have at least one valid layer
@@ -313,7 +313,5 @@ class FDLLoss(nn.Module):
             print("Warning: NaN in final FDL loss, returning 0")
             return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
         
-        # Apply loss weight and scale factor
-        # Note: Following original FDL, we sum across layers (no averaging)
-        # Use scale_factor to control magnitude relative to pixel loss
-        return loss * self.loss_weight * self.scale_factor
+        # Return raw loss (weight and scale factor applied in forward())
+        return loss
