@@ -184,12 +184,12 @@ def train_pipeline(root_path):
             current_iter += 1
             if current_iter > total_iters:
                 break
-            # update learning rate
-            model.update_learning_rate(current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))
             # training
             try:
                 model.feed_data(train_data)
                 model.optimize_parameters(scaler, current_iter)
+                # update learning rate AFTER optimizer.step()
+                model.update_learning_rate(current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))
             except Exception as e:
                 logger.error(f'ERROR at iteration {current_iter}: {str(e)}')
                 import traceback
