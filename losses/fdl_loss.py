@@ -172,8 +172,10 @@ class FDLLoss(nn.Module):
         # Pre-generate random projections for each layer
         for i in range(len(self.feature_extractor.chns)):
             rand = torch.randn(num_proj, self.feature_extractor.chns[i], patch_size, patch_size)
-            # Normalize projections
-            rand = rand / rand.view(rand.shape[0], -1).norm(dim=1).unsqueeze(1).unsqueeze(2).unsqueeze(3)
+            # Normalize projections with epsilon for numerical stability
+            rand_norm = rand.view(rand.shape[0], -1).norm(dim=1, keepdim=True)
+            rand = rand.view(rand.shape[0], -1) / (rand_norm + 1e-8)
+            rand = rand.view(num_proj, self.feature_extractor.chns[i], patch_size, patch_size)
             self.register_buffer(f"rand_{i}", rand)
     
     def compute_swd(self, x, y, idx):
@@ -240,14 +242,24 @@ class FDLLoss(nn.Module):
         # Process each feature level
         for i, (feat_pred, feat_target) in enumerate(zip(pred_features, target_features)):
             # Transform to frequency domain
-            fft_pred = torch.fft.fftn(feat_pred, dim=(-2, -1))
-            fft_target = torch.fft.fftn(feat_target, dim=(-2, -1))
+            # Force float32 for FFT to avoid ComplexHalf issues with mixed precision
+            feat_pred_f32 = feat_pred.float()
+            feat_target_f32 = feat_target.float()
+            
+            fft_pred = torch.fft.fftn(feat_pred_f32, dim=(-2, -1))
+            fft_target = torch.fft.fftn(feat_target_f32, dim=(-2, -1))
             
             # Separate amplitude and phase
             pred_amp = torch.abs(fft_pred)
             pred_phase = torch.angle(fft_pred)
             target_amp = torch.abs(fft_target)
             target_phase = torch.angle(fft_target)
+            
+            # Convert back to original dtype for SWD computation
+            pred_amp = pred_amp.to(feat_pred.dtype)
+            pred_phase = pred_phase.to(feat_pred.dtype)
+            target_amp = target_amp.to(feat_target.dtype)
+            target_phase = target_phase.to(feat_target.dtype)
             
             # Compute SWD for amplitude and phase
             amp_distance = self.compute_swd(pred_amp, target_amp, i)
@@ -261,6 +273,16 @@ class FDLLoss(nn.Module):
             elif self.reduction == 'sum':
                 layer_loss = layer_loss.sum()
             
+            # Check for NaN and skip if found
+            if torch.isnan(layer_loss).any():
+                print(f"Warning: NaN detected in FDL loss at layer {i}, skipping this layer")
+                continue
+                
             loss += layer_loss
+        
+        # Final NaN check
+        if torch.isnan(loss).any():
+            print("Warning: NaN in final FDL loss, returning 0")
+            return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
         
         return loss * self.loss_weight
