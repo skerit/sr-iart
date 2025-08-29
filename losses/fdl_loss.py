@@ -55,6 +55,11 @@ class VGGFeatureExtractor(nn.Module):
     def forward(self, x):
         # Ensure float32 precision
         x = x.float()
+        
+        # CRITICAL: VGG expects inputs in [0, 1] range
+        # IART model outputs can be outside this range
+        x = torch.clamp(x, 0, 1)
+        
         # Normalize input
         h = (x - self.mean) / self.std
         
@@ -117,6 +122,11 @@ class ResNetFeatureExtractor(nn.Module):
     def forward(self, x):
         # Ensure float32 precision
         x = x.float()
+        
+        # CRITICAL: VGG expects inputs in [0, 1] range
+        # IART model outputs can be outside this range
+        x = torch.clamp(x, 0, 1)
+        
         # Normalize input
         h = (x - self.mean) / self.std
         
