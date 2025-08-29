@@ -173,6 +173,8 @@ class FDLLoss(nn.Module):
         use_input_norm (bool): Apply ImageNet normalization. Default: True
         range_norm (bool): Convert from [-1,1] to [0,1]. Default: False
         skip_nan_layers (bool): Skip layers with NaN loss. Default: True
+        skip_layers (list): List of layer indices to always skip. Default: None
+                            Example: [0, 1] to skip first two layers
     """
     
     def __init__(self,
@@ -188,7 +190,8 @@ class FDLLoss(nn.Module):
                  frame_chunk_size=4,
                  use_input_norm=True,
                  range_norm=False,
-                 skip_nan_layers=True):
+                 skip_nan_layers=True,
+                 skip_layers=None):
         super().__init__()
         
         self.loss_weight = loss_weight
@@ -200,6 +203,7 @@ class FDLLoss(nn.Module):
         self.scale_factor = scale_factor
         self.frame_chunk_size = frame_chunk_size
         self.skip_nan_layers = skip_nan_layers
+        self.skip_layers = skip_layers if skip_layers is not None else []
         
         # Initialize feature extractor with proper normalization settings
         if model == 'VGG':
@@ -308,6 +312,11 @@ class FDLLoss(nn.Module):
         
         # Process each feature level
         for i, (feat_pred, feat_target) in enumerate(zip(pred_features, target_features)):
+            # Skip layers based on configuration
+            if i in self.skip_layers:
+                skipped_layers.append(i)
+                continue
+            
             # Check for degenerate features (all zeros or very small)
             if feat_pred.abs().mean() < 1e-8 or feat_target.abs().mean() < 1e-8:
                 if self.skip_nan_layers:
@@ -362,9 +371,16 @@ class FDLLoss(nn.Module):
                 else:
                     raise
         
-        # Log skipped layers if any
+        # Log skipped layers if any (differentiate between configured and automatic skips)
         if skipped_layers:
-            print(f"FDL: Skipped layers {skipped_layers} due to numerical issues")
+            configured_skips = [i for i in skipped_layers if i in self.skip_layers]
+            auto_skips = [i for i in skipped_layers if i not in self.skip_layers]
+            
+            if auto_skips and configured_skips:
+                print(f"FDL: Skipped layers {configured_skips} (configured) and {auto_skips} (numerical issues)")
+            elif auto_skips:
+                print(f"FDL: Skipped layers {auto_skips} due to numerical issues")
+            # Don't log configured skips unless there are also auto skips
         
         # Check if any valid layers were processed
         if not has_valid_layer:

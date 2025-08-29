@@ -163,6 +163,15 @@ train:
     # Typical values: 0.001-0.01
     scale_factor: 0.002  # Adjust to balance with pixel loss (was 0.01/5)
 
+    # Use ImageNet normalization
+    use_input_norm: true
+
+    # No need to modify ranges, IART outputs [0,1], not [-1,1]
+    range_norm: false
+
+    # Skip problematic layers
+    skip_layers: [0, 1]
+
 # validation settings
 val:
   # Validate every 500 iterations
