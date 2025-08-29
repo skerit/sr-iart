@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torchvision import models as tv
 from basicsr.utils.registry import LOSS_REGISTRY
 from torch.utils.checkpoint import checkpoint
+from torch.cuda.amp import autocast
 
 
 class VGGFeatureExtractor(nn.Module):
@@ -50,7 +51,10 @@ class VGGFeatureExtractor(nn.Module):
         # Channel dimensions for each stage
         self.chns = [64, 128, 256, 512, 512]
     
+    @autocast(enabled=False)  # Force float32 for pretrained network stability
     def forward(self, x):
+        # Ensure float32 precision
+        x = x.float()
         # Normalize input
         h = (x - self.mean) / self.std
         
@@ -109,7 +113,10 @@ class ResNetFeatureExtractor(nn.Module):
         # Channel dimensions for each stage
         self.chns = [64, 256, 512, 1024]
     
+    @autocast(enabled=False)  # Force float32 for pretrained network stability
     def forward(self, x):
+        # Ensure float32 precision
+        x = x.float()
         # Normalize input
         h = (x - self.mean) / self.std
         
@@ -245,24 +252,14 @@ class FDLLoss(nn.Module):
         # Process each feature level
         for i, (feat_pred, feat_target) in enumerate(zip(pred_features, target_features)):
             # Transform to frequency domain
-            # Force float32 for FFT to avoid ComplexHalf issues with mixed precision
-            feat_pred_f32 = feat_pred.float()
-            feat_target_f32 = feat_target.float()
-            
-            fft_pred = torch.fft.fftn(feat_pred_f32, dim=(-2, -1))
-            fft_target = torch.fft.fftn(feat_target_f32, dim=(-2, -1))
+            fft_pred = torch.fft.fftn(feat_pred, dim=(-2, -1))
+            fft_target = torch.fft.fftn(feat_target, dim=(-2, -1))
             
             # Separate amplitude and phase
             pred_amp = torch.abs(fft_pred)
             pred_phase = torch.angle(fft_pred)
             target_amp = torch.abs(fft_target)
             target_phase = torch.angle(fft_target)
-            
-            # Convert back to original dtype for SWD computation
-            pred_amp = pred_amp.to(feat_pred.dtype)
-            pred_phase = pred_phase.to(feat_pred.dtype)
-            target_amp = target_amp.to(feat_target.dtype)
-            target_phase = target_phase.to(feat_target.dtype)
             
             # Compute SWD for amplitude and phase
             amp_distance = self.compute_swd(pred_amp, target_amp, i)
