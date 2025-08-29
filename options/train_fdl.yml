@@ -145,7 +145,11 @@ train:
     # SWD (Sliced Wasserstein Distance) parameters
     patch_size: 5  # Size of patches for projection
     stride: 1  # Stride for patch extraction
-    num_proj: 256  # Full projections for better accuracy (memory safe with chunking)
+
+    # Full projections for better accuracy (memory safe with chunking)
+    # 256 is often overkill, 128 should be fine
+    # Anything under 64 starts degrading
+    num_proj: 128
     
     # Phase weight - controls importance of phase vs amplitude
     # Lower values (0.5-0.8) = more robust to misalignment
@@ -155,7 +159,7 @@ train:
     reduction: mean
     
     # Memory optimization parameters
-    chunk_size: 8  # Process SWD projections in chunks (for sorting)
+    chunk_size: 16  # Process SWD projections in chunks (for sorting)
     frame_chunk_size: 4  # Process video frames in chunks (for VGG feature extraction)
     
     # Scale factor to match pixel loss magnitude
@@ -170,7 +174,7 @@ train:
     range_norm: false
 
     # Skip problematic layers
-    skip_layers: [0, 1]
+    #skip_layers: [0, 1]
 
 # validation settings
 val:
