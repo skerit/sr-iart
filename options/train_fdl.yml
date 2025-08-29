@@ -137,7 +137,7 @@ train:
   # FDL - Feature Distance Loss (robust to misalignment)
   fdl_opt:
     type: FDLLoss
-    loss_weight: 1.0  # Start with equal weight to pixel loss
+    loss_weight: 0.1  # Start with lower weight while tuning scale
     
     # Feature extractor backbone
     model: VGG  # 'VGG' or 'ResNet' - VGG is faster, ResNet is more accurate

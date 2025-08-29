@@ -238,6 +238,7 @@ class FDLLoss(nn.Module):
         target_features = self.feature_extractor(target)
         
         loss = 0.0
+        num_valid_layers = 0  # Track layers without NaN
         
         # Process each feature level
         for i, (feat_pred, feat_target) in enumerate(zip(pred_features, target_features)):
@@ -279,10 +280,22 @@ class FDLLoss(nn.Module):
                 continue
                 
             loss += layer_loss
+            num_valid_layers += 1
+        
+        # Average across valid layers to normalize scale
+        if num_valid_layers > 0:
+            loss = loss / num_valid_layers
+        else:
+            print("Warning: All FDL layers had NaN, returning 0")
+            return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
         
         # Final NaN check
         if torch.isnan(loss).any():
             print("Warning: NaN in final FDL loss, returning 0")
             return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
         
-        return loss * self.loss_weight
+        # Apply additional scaling factor to match pixel loss range
+        # FDL typically produces values 10-100x larger than pixel loss
+        scale_factor = 0.01  # Empirical scaling to match pixel loss magnitude
+        
+        return loss * self.loss_weight * scale_factor
