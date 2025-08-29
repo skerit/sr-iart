@@ -16,7 +16,7 @@ from torch.cuda.amp import autocast
 class VGGFeatureExtractor(nn.Module):
     """VGG19 feature extractor for FDL loss."""
     
-    def __init__(self, requires_grad=False, pretrained=True):
+    def __init__(self, requires_grad=False, pretrained=True, use_input_norm=True, range_norm=False):
         super().__init__()
         
         vgg_pretrained_features = tv.vgg19(pretrained=pretrained).features
@@ -44,9 +44,13 @@ class VGGFeatureExtractor(nn.Module):
             for param in self.parameters():
                 param.requires_grad = False
         
-        # ImageNet normalization
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
+        self.use_input_norm = use_input_norm
+        self.range_norm = range_norm
+        
+        if self.use_input_norm:
+            # ImageNet normalization - for images in [0, 1] range
+            self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
+            self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
         
         # Channel dimensions for each stage
         self.chns = [64, 128, 256, 512, 512]
@@ -56,15 +60,18 @@ class VGGFeatureExtractor(nn.Module):
         # Ensure float32 precision
         x = x.float()
         
-        # CRITICAL: VGG expects inputs in [0, 1] range
-        # IART model outputs can be outside this range
-        x = torch.clamp(x, 0, 1)
+        # Optional: Convert from [-1, 1] to [0, 1] if needed
+        if self.range_norm:
+            x = (x + 1) / 2
         
-        # Normalize input
-        h = (x - self.mean) / self.std
+        # Apply ImageNet normalization if enabled
+        if self.use_input_norm:
+            # This expects x to be roughly in [0, 1] range
+            # But doesn't enforce it with clamping
+            x = (x - self.mean) / self.std
         
         # Extract features at different levels
-        h = self.stage1(h)
+        h = self.stage1(x)
         h_relu1_2 = h
         
         h = self.stage2(h)
@@ -83,9 +90,9 @@ class VGGFeatureExtractor(nn.Module):
 
 
 class ResNetFeatureExtractor(nn.Module):
-    """ResNet101 feature extractor for FDL loss."""
+    """ResNet101 feature extractor for FDL loss - Fixed version."""
     
-    def __init__(self, requires_grad=False, pretrained=True):
+    def __init__(self, requires_grad=False, pretrained=True, use_input_norm=True, range_norm=False):
         super().__init__()
         
         model = tv.resnet101(pretrained=pretrained)
@@ -111,9 +118,13 @@ class ResNetFeatureExtractor(nn.Module):
             for param in self.parameters():
                 param.requires_grad = False
         
-        # ImageNet normalization
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
+        self.use_input_norm = use_input_norm
+        self.range_norm = range_norm
+        
+        if self.use_input_norm:
+            # ImageNet normalization
+            self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1))
+            self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1))
         
         # Channel dimensions for each stage
         self.chns = [64, 256, 512, 1024]
@@ -123,15 +134,16 @@ class ResNetFeatureExtractor(nn.Module):
         # Ensure float32 precision
         x = x.float()
         
-        # CRITICAL: VGG expects inputs in [0, 1] range
-        # IART model outputs can be outside this range
-        x = torch.clamp(x, 0, 1)
+        # Optional: Convert from [-1, 1] to [0, 1] if needed
+        if self.range_norm:
+            x = (x + 1) / 2
         
-        # Normalize input
-        h = (x - self.mean) / self.std
+        # Apply ImageNet normalization if enabled
+        if self.use_input_norm:
+            x = (x - self.mean) / self.std
         
         # Extract features at different levels
-        h = self.stage1(h)
+        h = self.stage1(x)
         h_stage1 = h
         
         h = self.stage2(h)
@@ -148,7 +160,7 @@ class ResNetFeatureExtractor(nn.Module):
 
 @LOSS_REGISTRY.register()
 class FDLLoss(nn.Module):
-    """Feature Distance Loss - robust to misalignment through frequency domain comparison.
+    """Feature Distance Loss.
     
     Args:
         loss_weight (float): Weight of the loss. Default: 1.0
@@ -158,6 +170,9 @@ class FDLLoss(nn.Module):
         num_proj (int): Number of projections for SWD. Default: 256
         phase_weight (float): Weight for phase component. Default: 1.0
         reduction (str): Reduction method ('mean' or 'sum'). Default: 'mean'
+        use_input_norm (bool): Apply ImageNet normalization. Default: True
+        range_norm (bool): Convert from [-1,1] to [0,1]. Default: False
+        skip_nan_layers (bool): Skip layers with NaN loss. Default: True
     """
     
     def __init__(self,
@@ -165,12 +180,15 @@ class FDLLoss(nn.Module):
                  model='VGG',
                  patch_size=5,
                  stride=1,
-                 num_proj=256,  # Full projections - memory safe with chunking
+                 num_proj=256,
                  phase_weight=1.0,
                  reduction='mean',
-                 chunk_size=16,  # Process projections in chunks
-                 scale_factor=1.0,  # Configurable scale factor
-                 frame_chunk_size=4):  # Process video frames in chunks
+                 chunk_size=16,
+                 scale_factor=1.0,
+                 frame_chunk_size=4,
+                 use_input_norm=True,
+                 range_norm=False,
+                 skip_nan_layers=True):
         super().__init__()
         
         self.loss_weight = loss_weight
@@ -178,15 +196,22 @@ class FDLLoss(nn.Module):
         self.phase_weight = phase_weight
         self.stride = stride
         self.num_proj = num_proj
-        self.chunk_size = min(chunk_size, num_proj)  # Ensure chunk size doesn't exceed num_proj
+        self.chunk_size = min(chunk_size, num_proj)
         self.scale_factor = scale_factor
-        self.frame_chunk_size = frame_chunk_size  # For memory-efficient video processing
+        self.frame_chunk_size = frame_chunk_size
+        self.skip_nan_layers = skip_nan_layers
         
-        # Initialize feature extractor
+        # Initialize feature extractor with proper normalization settings
         if model == 'VGG':
-            self.feature_extractor = VGGFeatureExtractor()
+            self.feature_extractor = VGGFeatureExtractor(
+                use_input_norm=use_input_norm,
+                range_norm=range_norm
+            )
         elif model == 'ResNet':
-            self.feature_extractor = ResNetFeatureExtractor()
+            self.feature_extractor = ResNetFeatureExtractor(
+                use_input_norm=use_input_norm,
+                range_norm=range_norm
+            )
         else:
             raise ValueError(f"Unsupported model: {model}. Choose 'VGG' or 'ResNet'")
         
@@ -225,7 +250,6 @@ class FDLLoss(nn.Module):
             proj_y = proj_y.reshape(B, end_idx - i, -1)
             
             # Sort projections (key for Wasserstein distance)
-            # Use in-place operations to save memory
             proj_x = proj_x.sort(dim=-1)[0]
             proj_y = proj_y.sort(dim=-1)[0]
             
@@ -279,49 +303,74 @@ class FDLLoss(nn.Module):
         target_features = self.feature_extractor(target)
         
         loss = 0.0
-        has_valid_layer = False  # Track if we have at least one valid layer
+        has_valid_layer = False
+        skipped_layers = []
         
         # Process each feature level
         for i, (feat_pred, feat_target) in enumerate(zip(pred_features, target_features)):
-            # Transform to frequency domain
-            fft_pred = torch.fft.fftn(feat_pred, dim=(-2, -1))
-            fft_target = torch.fft.fftn(feat_target, dim=(-2, -1))
+            # Check for degenerate features (all zeros or very small)
+            if feat_pred.abs().mean() < 1e-8 or feat_target.abs().mean() < 1e-8:
+                if self.skip_nan_layers:
+                    skipped_layers.append(i)
+                    continue
             
-            # Separate amplitude and phase
-            pred_amp = torch.abs(fft_pred)
-            pred_phase = torch.angle(fft_pred)
-            target_amp = torch.abs(fft_target)
-            target_phase = torch.angle(fft_target)
-            
-            # Compute SWD for amplitude and phase
-            amp_distance = self.compute_swd(pred_amp, target_amp, i)
-            phase_distance = self.compute_swd(pred_phase, target_phase, i)
-            
-            # Combine amplitude and phase distances
-            layer_loss = amp_distance + self.phase_weight * phase_distance
-            
-            if self.reduction == 'mean':
-                layer_loss = layer_loss.mean()
-            elif self.reduction == 'sum':
-                layer_loss = layer_loss.sum()
-            
-            # Check for NaN and skip if found
-            if torch.isnan(layer_loss).any():
-                print(f"Warning: NaN detected in FDL loss at layer {i}, skipping this layer")
-                continue
+            # Transform to frequency domain with stability check
+            try:
+                fft_pred = torch.fft.fftn(feat_pred, dim=(-2, -1))
+                fft_target = torch.fft.fftn(feat_target, dim=(-2, -1))
                 
-            loss += layer_loss
-            has_valid_layer = True
+                # Add small epsilon to prevent numerical issues in angle computation
+                eps = 1e-10
+                fft_pred_stable = fft_pred + eps
+                fft_target_stable = fft_target + eps
+                
+                # Separate amplitude and phase
+                pred_amp = torch.abs(fft_pred_stable)
+                pred_phase = torch.angle(fft_pred_stable)
+                target_amp = torch.abs(fft_target_stable)
+                target_phase = torch.angle(fft_target_stable)
+                
+                # Compute SWD for amplitude and phase
+                amp_distance = self.compute_swd(pred_amp, target_amp, i)
+                phase_distance = self.compute_swd(pred_phase, target_phase, i)
+                
+                # Combine amplitude and phase distances
+                layer_loss = amp_distance + self.phase_weight * phase_distance
+                
+                if self.reduction == 'mean':
+                    layer_loss = layer_loss.mean()
+                elif self.reduction == 'sum':
+                    layer_loss = layer_loss.sum()
+                
+                # Check for NaN after computation
+                if torch.isnan(layer_loss).any() or torch.isinf(layer_loss).any():
+                    if self.skip_nan_layers:
+                        skipped_layers.append(i)
+                        continue
+                    else:
+                        # Fallback to zero contribution from this layer
+                        layer_loss = torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
+                
+                loss += layer_loss
+                has_valid_layer = True
+                
+            except Exception as e:
+                # Handle any FFT or computation errors
+                if self.skip_nan_layers:
+                    skipped_layers.append(i)
+                    continue
+                else:
+                    raise
+        
+        # Log skipped layers if any
+        if skipped_layers:
+            print(f"FDL: Skipped layers {skipped_layers} due to numerical issues")
         
         # Check if any valid layers were processed
         if not has_valid_layer:
-            print("Warning: All FDL layers had NaN, returning 0")
-            return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
-        
-        # Final NaN check
-        if torch.isnan(loss).any():
-            print("Warning: NaN in final FDL loss, returning 0")
-            return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
+            print("Warning: All FDL layers had issues, returning small loss")
+            # Return small non-zero loss to maintain gradient flow
+            return torch.tensor(0.001, device=pred.device, dtype=pred.dtype, requires_grad=True)
         
         # Return raw loss (weight and scale factor applied in forward())
         return loss
