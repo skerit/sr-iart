@@ -303,6 +303,10 @@ class FDLLoss(nn.Module):
     @autocast(enabled=False)  # Force float32 for numerical stability in FFT/SWD
     def _compute_fdl_loss(self, pred, target):
         """Compute FDL loss for a batch of frames/images."""
+        # Ensure inputs are float32 for numerical stability
+        pred = pred.float()
+        target = target.float()
+        
         # Extract features
         pred_features = self.feature_extractor(pred)
         target_features = self.feature_extractor(target)
