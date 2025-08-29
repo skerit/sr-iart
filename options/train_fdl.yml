@@ -137,7 +137,7 @@ train:
   # FDL - Feature Distance Loss (robust to misalignment)
   fdl_opt:
     type: FDLLoss
-    loss_weight: 0.1  # Start with lower weight while tuning scale
+    loss_weight: 1.0  # Primary weight for balancing with pixel loss
     
     # Feature extractor backbone
     model: VGG  # 'VGG' or 'ResNet' - VGG is faster, ResNet is more accurate
@@ -156,6 +156,11 @@ train:
     
     # Memory optimization parameters
     chunk_size: 16  # Process projections in chunks to save memory
+    
+    # Scale factor to match pixel loss magnitude
+    # Original FDL sums 5 layers, producing values ~50-100x larger than pixel loss
+    # Typical values: 0.001-0.01
+    scale_factor: 0.002  # Adjust to balance with pixel loss (was 0.01/5)
 
 # validation settings
 val:

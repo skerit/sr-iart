@@ -151,7 +151,8 @@ class FDLLoss(nn.Module):
                  num_proj=256,  # Full projections - memory safe with chunking
                  phase_weight=1.0,
                  reduction='mean',
-                 chunk_size=16):  # Process projections in chunks
+                 chunk_size=16,  # Process projections in chunks
+                 scale_factor=1.0):  # Configurable scale factor
         super().__init__()
         
         self.loss_weight = loss_weight
@@ -160,6 +161,7 @@ class FDLLoss(nn.Module):
         self.stride = stride
         self.num_proj = num_proj
         self.chunk_size = min(chunk_size, num_proj)  # Ensure chunk size doesn't exceed num_proj
+        self.scale_factor = scale_factor
         
         # Initialize feature extractor
         if model == 'VGG':
@@ -238,7 +240,7 @@ class FDLLoss(nn.Module):
         target_features = self.feature_extractor(target)
         
         loss = 0.0
-        num_valid_layers = 0  # Track layers without NaN
+        has_valid_layer = False  # Track if we have at least one valid layer
         
         # Process each feature level
         for i, (feat_pred, feat_target) in enumerate(zip(pred_features, target_features)):
@@ -280,12 +282,10 @@ class FDLLoss(nn.Module):
                 continue
                 
             loss += layer_loss
-            num_valid_layers += 1
+            has_valid_layer = True
         
-        # Average across valid layers to normalize scale
-        if num_valid_layers > 0:
-            loss = loss / num_valid_layers
-        else:
+        # Check if any valid layers were processed
+        if not has_valid_layer:
             print("Warning: All FDL layers had NaN, returning 0")
             return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
         
@@ -294,8 +294,7 @@ class FDLLoss(nn.Module):
             print("Warning: NaN in final FDL loss, returning 0")
             return torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
         
-        # Apply additional scaling factor to match pixel loss range
-        # FDL typically produces values 10-100x larger than pixel loss
-        scale_factor = 0.01  # Empirical scaling to match pixel loss magnitude
-        
-        return loss * self.loss_weight * scale_factor
+        # Apply loss weight and scale factor
+        # Note: Following original FDL, we sum across layers (no averaging)
+        # Use scale_factor to control magnitude relative to pixel loss
+        return loss * self.loss_weight * self.scale_factor
