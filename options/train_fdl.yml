@@ -2,7 +2,7 @@
 # FDL is robust to misalignment between input and ground truth
 
 # general settings
-name: IART_DVD_Bluray_FDL
+name: IART_FDL
 model_type: RecurrentMixPrecisionRTModel
 scale: 4
 num_gpu: 1
@@ -200,12 +200,15 @@ val:
 
 # logging settings
 logger:
-  print_freq: 100
+  # Log and send to Wandb frequently
+  print_freq: 10
+
+  # Save checkpoint model & state
   save_checkpoint_freq: 100
   use_tb_logger: true
   wandb:
-    project: ~
-    resume_id: ~
+    project: IART-FDL
+    resume_id: IART-FDL
 
 dist_params:
   backend: nccl
