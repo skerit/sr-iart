@@ -743,6 +743,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         import numpy as np
         import torch
         import torchvision
+        import cv2
         from tqdm import tqdm
         from basicsr.metrics import calculate_metric
         from basicsr.utils import tensor2img, imwrite
@@ -861,6 +862,24 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                         # Also save the generated frame separately
                         output_path = osp.join(save_folder, f'{folder}_output.png')
                         imwrite(result_frame, output_path)
+                        
+                        # Log to W&B if available
+                        try:
+                            import wandb
+                            if wandb.run is not None:
+                                # Convert BGR to RGB for W&B
+                                grid_rgb = cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
+                                result_rgb = cv2.cvtColor(result_frame, cv2.COLOR_BGR2RGB)
+                                
+                                # Log comparison grid
+                                wandb.log({
+                                    f'val/{folder}_grid': wandb.Image(grid_rgb, 
+                                        caption=f'{folder} - LQ | Output | GT'),
+                                    f'val/{folder}_output': wandb.Image(result_rgb,
+                                        caption=f'{folder} - Output')
+                                }, commit=False)
+                        except ImportError:
+                            pass  # W&B not installed
                     else:
                         # Save individual images
                         save_folder = osp.join(self.opt['path']['visualization'], 
@@ -871,6 +890,24 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                         imwrite(lq_img, osp.join(save_folder, f'{folder}_lq.png'))
                         imwrite(result_img, osp.join(save_folder, f'{folder}_output.png'))
                         imwrite(gt_img, osp.join(save_folder, f'{folder}_gt.png'))
+                        
+                        # Log to W&B if available
+                        try:
+                            import wandb
+                            if wandb.run is not None:
+                                # Convert BGR to RGB for W&B
+                                lq_rgb = cv2.cvtColor(lq_img, cv2.COLOR_BGR2RGB)
+                                result_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
+                                gt_rgb = cv2.cvtColor(gt_img, cv2.COLOR_BGR2RGB)
+                                
+                                # Log individual images
+                                wandb.log({
+                                    f'val/{folder}_lq': wandb.Image(lq_rgb, caption=f'{folder} - LQ'),
+                                    f'val/{folder}_output': wandb.Image(result_rgb, caption=f'{folder} - Output'),
+                                    f'val/{folder}_gt': wandb.Image(gt_rgb, caption=f'{folder} - GT')
+                                }, commit=False)
+                        except ImportError:
+                            pass  # W&B not installed
                 
                 # Clean up visuals and GPU memory after each validation clip
                 del visuals
