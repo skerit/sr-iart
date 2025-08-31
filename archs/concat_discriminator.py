@@ -12,7 +12,7 @@ class ConcatDiscriminator(nn.Module):
     Lower scores = better match (more similar to GT quality).
     """
     
-    def __init__(self, in_channels=6, base_channels=192, num_layers=7):
+    def __init__(self, in_channels=6, base_channels=128, num_layers=5):
         super().__init__()
         
         layers = []
@@ -23,8 +23,9 @@ class ConcatDiscriminator(nn.Module):
             # Use stride 2 for downsampling (except last layer)
             stride = 2 if i < num_layers - 1 else 1
             
+            # Add bias back for better expressiveness
             layers.append(
-                nn.Conv2d(current_channels, out_channels, 4, stride, 1, bias=False)
+                nn.Conv2d(current_channels, out_channels, 4, stride, 1, bias=True)
             )
             
             # Skip BatchNorm on first layer (following standard practice)
@@ -41,6 +42,9 @@ class ConcatDiscriminator(nn.Module):
         # Final layer outputs a single channel (quality map)
         # Use 3x3 kernel with padding 1 for better compatibility with various depths
         self.final = nn.Conv2d(current_channels, 1, 3, 1, 1)
+        
+        # Initialize weights properly
+        self._initialize_weights()
         
     def forward(self, generated, ground_truth):
         """Compare generated image with ground truth.
@@ -62,9 +66,26 @@ class ConcatDiscriminator(nn.Module):
         quality_map = self.final(features)  # [B, 1, H', W']
         
         # Global average pooling to get single score per image
-        score = torch.sigmoid(quality_map.mean(dim=[2, 3]))  # [B, 1]
+        # Return raw logits - sigmoid will be handled by BCEWithLogitsLoss if needed
+        score = quality_map.mean(dim=[2, 3])  # [B, 1]
         
         return score
+    
+    def forward_with_sigmoid(self, generated, ground_truth):
+        """Forward pass with sigmoid for inference/testing."""
+        logits = self.forward(generated, ground_truth)
+        return torch.sigmoid(logits)
+    
+    def _initialize_weights(self):
+        """Proper weight initialization for better training."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
     
     def get_feature_maps(self, generated, ground_truth):
         """Get intermediate feature maps for loss calculation.

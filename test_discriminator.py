@@ -109,9 +109,10 @@ def score_image_pair(model, generated_path, gt_path, patch_size=128, device='cud
                 gen_tensor = gen_tensor.unsqueeze(0).to(device)
                 gt_tensor = gt_tensor.unsqueeze(0).to(device)
                 
-                # Get score
+                # Get score (use sigmoid for testing)
                 with torch.no_grad():
-                    score = model(gen_tensor, gt_tensor)
+                    logits = model(gen_tensor, gt_tensor)
+                    score = torch.sigmoid(logits)
                 scores.append(score.item())
         
         avg_score = np.mean(scores)
@@ -126,7 +127,8 @@ def score_image_pair(model, generated_path, gt_path, patch_size=128, device='cud
         gt_tensor = gt_tensor.unsqueeze(0).to(device)
         
         with torch.no_grad():
-            score = model(gen_tensor, gt_tensor)
+            logits = model(gen_tensor, gt_tensor)
+            score = torch.sigmoid(logits)
         return score.item(), 0.0, [score.item()]
 
 

@@ -144,7 +144,9 @@ def train_discriminator(args):
     else:
         scheduler = None
     
-    criterion = nn.MSELoss()
+    # Use BCEWithLogitsLoss for better gradient flow (combines sigmoid + BCE)
+    # This expects raw logits as input, not sigmoid outputs
+    criterion = nn.BCEWithLogitsLoss()
     
     # Training loop
     best_val_loss = float('inf')
@@ -364,16 +366,16 @@ def main():
     parser.add_argument('dataset_dir', type=str, help='Directory containing dataset images')
     
     # Model arguments
-    parser.add_argument('--base_channels', type=int, default=192, 
+    parser.add_argument('--base_channels', type=int, default=128, 
                         help='Base number of channels')
-    parser.add_argument('--num_layers', type=int, default=7, 
+    parser.add_argument('--num_layers', type=int, default=5, 
                         help='Number of discriminator layers')
     
     # Training arguments
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--patch_size', type=int, default=128, help='Patch size for training')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--val_split', type=float, default=0.1, 
                         help='Validation split ratio')
     parser.add_argument('--no_val', action='store_true',
