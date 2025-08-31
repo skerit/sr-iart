@@ -144,9 +144,9 @@ def train_discriminator(args):
     else:
         scheduler = None
     
-    # Use BCEWithLogitsLoss for better gradient flow (combines sigmoid + BCE)
-    # This expects raw logits as input, not sigmoid outputs
-    criterion = nn.BCEWithLogitsLoss()
+    # Use MSELoss for regression task (predicting continuous quality scores)
+    # We'll apply sigmoid to convert logits to 0-1 range, then use MSE
+    criterion = nn.MSELoss()
     
     # Training loop
     best_val_loss = float('inf')
@@ -169,7 +169,9 @@ def train_discriminator(args):
                     target_scores = batch['target_score'].to(device)
                     
                     # Forward pass
-                    predicted_scores = model(generated, gt)
+                    predicted_logits = model(generated, gt)
+                    # Apply sigmoid to get probabilities for regression
+                    predicted_scores = torch.sigmoid(predicted_logits)
                     loss = criterion(predicted_scores, target_scores)
                     
                     # Log worst predictions occasionally
@@ -244,7 +246,9 @@ def train_discriminator(args):
                     target_scores = batch['target_score'].to(device)
                 
                     # Forward pass
-                    predicted_scores = model(generated, gt)
+                    predicted_logits = model(generated, gt)
+                    # Apply sigmoid to get probabilities for regression
+                    predicted_scores = torch.sigmoid(predicted_logits)
                     loss = criterion(predicted_scores, target_scores)
                     
                     # Log worst predictions occasionally
