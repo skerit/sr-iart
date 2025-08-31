@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 import argparse
 from tqdm import tqdm
+import wandb
 
 from archs.concat_discriminator import ConcatDiscriminator
 
@@ -81,6 +82,21 @@ class PreGeneratedDataset(Dataset):
 
 def train_discriminator(args):
     """Train the discriminator."""
+    
+    # Initialize wandb
+    if args.use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_name or f"disc_lr{args.lr}_bs{args.batch_size}",
+            config={
+                "learning_rate": args.lr,
+                "batch_size": args.batch_size,
+                "epochs": args.epochs,
+                "base_channels": args.base_channels,
+                "num_layers": args.num_layers,
+                "patch_size": args.patch_size,
+            }
+        )
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -203,6 +219,17 @@ def train_discriminator(args):
                     pbar.update(1)
                     pbar.set_postfix({'loss': f"{loss.item():.4f}", 'epoch': epoch+1})
                     
+                    # Log to wandb
+                    if args.use_wandb:
+                        wandb.log({
+                            'train/loss': loss.item(),
+                            'train/worst_pred': worst_pred if global_iteration % 100 == 0 else None,
+                            'train/worst_target': worst_target if global_iteration % 100 == 0 else None,
+                            'train/worst_error': worst_error if global_iteration % 100 == 0 else None,
+                            'train/epoch': epoch + 1,
+                            'iteration': global_iteration,
+                        })
+                    
                     # Save checkpoint every N iterations
                     if global_iteration % args.save_iter == 0:
                         iter_checkpoint = {
@@ -280,6 +307,17 @@ def train_discriminator(args):
                     global_iteration += 1
                     pbar.set_postfix({'loss': f"{loss.item():.4f}", 'iter': global_iteration})
                     
+                    # Log to wandb
+                    if args.use_wandb:
+                        wandb.log({
+                            'train/loss': loss.item(),
+                            'train/worst_pred': worst_pred if batch_idx % 100 == 0 else None,
+                            'train/worst_target': worst_target if batch_idx % 100 == 0 else None,
+                            'train/worst_error': worst_error if batch_idx % 100 == 0 else None,
+                            'train/epoch': epoch + 1,
+                            'iteration': global_iteration,
+                        })
+                    
                     # Save checkpoint every N iterations
                     if global_iteration % args.save_iter == 0:
                         iter_checkpoint = {
@@ -319,6 +357,14 @@ def train_discriminator(args):
             
             print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
             
+            # Log to wandb
+            if args.use_wandb:
+                wandb.log({
+                    'train/loss_epoch': avg_train_loss,
+                    'val/loss': avg_val_loss,
+                    'epoch': epoch + 1,
+                })
+            
             # Learning rate scheduling
             scheduler.step(avg_val_loss)
             
@@ -336,9 +382,19 @@ def train_discriminator(args):
                 os.makedirs(args.save_dir, exist_ok=True)
                 torch.save(checkpoint, save_path)
                 print(f"Saved best model with val_loss: {avg_val_loss:.4f}")
+                
+                if args.use_wandb:
+                    wandb.log({'val/best_loss': avg_val_loss})
         else:
             # No validation - just print train loss
             print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}")
+            
+            # Log to wandb
+            if args.use_wandb:
+                wandb.log({
+                    'train/loss_epoch': avg_train_loss,
+                    'epoch': epoch + 1,
+                })
             
             # Save best model based on train loss
             if avg_train_loss < best_val_loss:
@@ -353,6 +409,9 @@ def train_discriminator(args):
                 os.makedirs(args.save_dir, exist_ok=True)
                 torch.save(checkpoint, save_path)
                 print(f"Saved best model with train_loss: {avg_train_loss:.4f}")
+                
+                if args.use_wandb:
+                    wandb.log({'train/best_loss': avg_train_loss})
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0:
@@ -377,6 +436,15 @@ def train_discriminator(args):
     final_path = f"{args.save_dir}/discriminator_final.pth"
     torch.save(final_checkpoint, final_path)
     print(f"Training complete! Final model saved to {final_path}")
+    
+    # Log final metrics and finish wandb
+    if args.use_wandb:
+        wandb.log({
+            'final/train_loss': avg_train_loss,
+            'final/val_loss': avg_val_loss if not args.no_val else None,
+            'final/best_val_loss': best_val_loss,
+        })
+        wandb.finish()
 
 
 def main():
@@ -413,6 +481,14 @@ def main():
                         help='Save checkpoint every N epochs')
     parser.add_argument('--save_iter', type=int, default=100,
                         help='Save checkpoint every N iterations')
+    
+    # Wandb arguments
+    parser.add_argument('--use_wandb', action='store_true',
+                        help='Use Weights & Biases for logging')
+    parser.add_argument('--wandb_project', type=str, default='discriminator-training',
+                        help='Wandb project name')
+    parser.add_argument('--wandb_name', type=str, default=None,
+                        help='Wandb run name (auto-generated if not provided)')
     
     args = parser.parse_args()
     train_discriminator(args)

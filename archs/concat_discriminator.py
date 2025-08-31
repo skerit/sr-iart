@@ -80,12 +80,18 @@ class ConcatDiscriminator(nn.Module):
         """Proper weight initialization for better training."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.xavier_normal_(m.weight)
+                # Use Kaiming initialization which works better with ReLU
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+        
+        # Special initialization for final layer to break symmetry
+        # Initialize to output different values for different inputs
+        nn.init.normal_(self.final.weight, mean=0, std=0.1)
+        nn.init.constant_(self.final.bias, -2.0)  # Bias towards 0.12 after sigmoid
     
     def get_feature_maps(self, generated, ground_truth):
         """Get intermediate feature maps for loss calculation.
