@@ -172,7 +172,8 @@ def train_discriminator(args):
                     predicted_logits = model(generated, gt)
                     # Apply sigmoid to get probabilities for regression
                     predicted_scores = torch.sigmoid(predicted_logits)
-                    loss = criterion(predicted_scores, target_scores)
+                    # Scale loss by 100 to get more reasonable gradients
+                    loss = criterion(predicted_scores, target_scores) * 100
                     
                     # Log worst predictions occasionally
                     if global_iteration % 100 == 0:
@@ -249,7 +250,8 @@ def train_discriminator(args):
                     predicted_logits = model(generated, gt)
                     # Apply sigmoid to get probabilities for regression
                     predicted_scores = torch.sigmoid(predicted_logits)
-                    loss = criterion(predicted_scores, target_scores)
+                    # Scale loss by 100 to get more reasonable gradients
+                    loss = criterion(predicted_scores, target_scores) * 100
                     
                     # Log worst predictions occasionally
                     if batch_idx % 100 == 0:
