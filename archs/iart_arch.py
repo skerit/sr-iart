@@ -270,10 +270,11 @@ class IART(nn.Module):
             hr = self.lrelu(self.pixel_shuffle(self.upconv2(hr)))
             hr = self.lrelu(self.conv_hr(hr))
             hr = self.conv_last(hr)
-            if self.is_low_res_input:
-                hr += self.img_upsample(lqs[:, i, :, :, :])
-            else:
-                hr += lqs[:, i, :, :, :]
+            # Baseline/residual connection removed to allow spatial warping
+            # if self.is_low_res_input:
+            #     hr += self.img_upsample(lqs[:, i, :, :, :])
+            # else:
+            #     hr += lqs[:, i, :, :, :]
 
             if self.cpu_cache:
                 hr = hr.cpu()
