@@ -140,9 +140,12 @@ class ConcatDiscriminatorLoss(nn.Module):
             Loss value (scalar)
         """
         with torch.no_grad():
-            score = self.discriminator(generated, ground_truth)
+            # Get raw logits from discriminator
+            score_logits = self.discriminator(generated, ground_truth)
         
-        # We want the score to be close to target_score (usually 0)
-        loss = F.mse_loss(score, torch.full_like(score, self.target_score))
+        # Use BCEWithLogitsLoss for consistency with discriminator training
+        # This gives proper gradients for the generator
+        target = torch.full_like(score_logits, self.target_score)
+        loss = F.binary_cross_entropy_with_logits(score_logits, target)
         
         return self.loss_weight * loss

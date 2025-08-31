@@ -150,6 +150,7 @@ def train_discriminator(args):
     
     # Training loop
     best_val_loss = float('inf')
+    avg_val_loss = float('inf')  # Initialize to prevent NameError when no_val is True
     global_iteration = 0
     
     if args.seamless_epochs:
@@ -173,9 +174,12 @@ def train_discriminator(args):
                     
                     # Log worst predictions occasionally
                     if global_iteration % 100 == 0:
-                        errors = torch.abs(predicted_scores - target_scores)
+                        with torch.no_grad():
+                            # Convert logits to probabilities for meaningful comparison
+                            predicted_probs = torch.sigmoid(predicted_scores)
+                            errors = torch.abs(predicted_probs - target_scores)
                         max_error_idx = torch.argmax(errors)
-                        worst_pred = predicted_scores[max_error_idx].item()
+                        worst_pred = predicted_probs[max_error_idx].item()
                         worst_target = target_scores[max_error_idx].item()
                         worst_error = errors[max_error_idx].item()
                         if worst_error > 0.3:
@@ -184,6 +188,10 @@ def train_discriminator(args):
                     # Backward pass
                     optimizer.zero_grad()
                     loss.backward()
+                    
+                    # Gradient clipping for stability with high learning rate
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
                     optimizer.step()
                     
                     # Update metrics
@@ -241,9 +249,12 @@ def train_discriminator(args):
                     
                     # Log worst predictions occasionally
                     if batch_idx % 100 == 0:
-                        errors = torch.abs(predicted_scores - target_scores)
+                        with torch.no_grad():
+                            # Convert logits to probabilities for meaningful comparison
+                            predicted_probs = torch.sigmoid(predicted_scores)
+                            errors = torch.abs(predicted_probs - target_scores)
                         max_error_idx = torch.argmax(errors)
-                        worst_pred = predicted_scores[max_error_idx].item()
+                        worst_pred = predicted_probs[max_error_idx].item()
                         worst_target = target_scores[max_error_idx].item()
                         worst_error = errors[max_error_idx].item()
                         if worst_error > 0.3:
@@ -252,6 +263,10 @@ def train_discriminator(args):
                     # Backward pass
                     optimizer.zero_grad()
                     loss.backward()
+                    
+                    # Gradient clipping for stability with high learning rate
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
                     optimizer.step()
                     
                     # Update metrics
