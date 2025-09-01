@@ -13,10 +13,11 @@ import random
 class DatasetGenerator:
     """Generate discriminator training dataset from config."""
     
-    def __init__(self, config_path, output_dir):
+    def __init__(self, config_path, output_dir, skip_existing=True):
         """Initialize generator with config and output directory."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.skip_existing = skip_existing
         
         with open(config_path, 'r') as f:
             self.config = json.load(f)
@@ -24,6 +25,20 @@ class DatasetGenerator:
         self.config_dir = Path(config_path).parent
         self.dataset_pairs = []
         self.gt_files_by_sample = {}  # Track GT files per sample for synthetic generation
+        
+        # Load existing dataset.json if it exists (for incremental generation)
+        self.existing_pairs = set()
+        self.initial_pair_count = 0
+        dataset_json_path = self.output_dir / 'dataset.json'
+        if dataset_json_path.exists() and skip_existing:
+            with open(dataset_json_path, 'r') as f:
+                existing_data = json.load(f)
+                # Create a set of (generated, gt) tuples for fast lookup
+                for pair in existing_data:
+                    self.existing_pairs.add((pair['generated'], pair['gt']))
+                self.dataset_pairs = existing_data  # Start with existing pairs
+                self.initial_pair_count = len(existing_data)
+                print(f"Loaded {len(self.existing_pairs)} existing pairs from dataset.json")
         
     def apply_operations(self, image, operations, target_size=None):
         """Apply a series of operations to an image."""
@@ -182,11 +197,17 @@ class DatasetGenerator:
             # Save GT image with sample name prefix for consistency
             gt_output_filename = f"{sample_name}_{gt_file.name}"
             gt_output_path = gt_output_dir / gt_output_filename
-            cv2.imwrite(str(gt_output_path), cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR))
             
-            # Track this GT file if synthetic generation is enabled
-            if generate_synthetic:
-                self.gt_files_by_sample[sample_name].append(gt_output_path)
+            # Skip if GT file already exists
+            if self.skip_existing and gt_output_path.exists():
+                # Still track it for synthetic generation
+                if generate_synthetic:
+                    self.gt_files_by_sample[sample_name].append(gt_output_path)
+            else:
+                cv2.imwrite(str(gt_output_path), cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR))
+                # Track this GT file if synthetic generation is enabled
+                if generate_synthetic:
+                    self.gt_files_by_sample[sample_name].append(gt_output_path)
             
             # Process each generation configuration
             for gen_config in sample.get('generations', []):
@@ -220,14 +241,25 @@ class DatasetGenerator:
                 # Save processed image with sample name prefix to avoid collisions
                 output_filename = f"{sample_name}_{base_name}_gen.png"
                 output_path = gen_output_dir / output_filename
+                
+                # Check if this pair already exists
+                gen_rel_path = str(output_path.relative_to(self.output_dir))
+                gt_rel_path = str(gt_output_path.relative_to(self.output_dir))
+                pair_exists = (gen_rel_path, gt_rel_path) in self.existing_pairs
+                
+                if self.skip_existing and output_path.exists() and pair_exists:
+                    continue  # Skip this generation
+                
                 cv2.imwrite(str(output_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
                 
-                # Add to dataset pairs
-                self.dataset_pairs.append({
-                    'generated': str(output_path.relative_to(self.output_dir)),
-                    'gt': str(gt_output_path.relative_to(self.output_dir)),
-                    'loss': loss_value
-                })
+                # Add to dataset pairs only if it's new
+                if not pair_exists:
+                    self.dataset_pairs.append({
+                        'generated': gen_rel_path,
+                        'gt': gt_rel_path,
+                        'loss': loss_value
+                    })
+                    self.existing_pairs.add((gen_rel_path, gt_rel_path))
     
     def generate_synthetic_samples(self):
         """Generate additional synthetic degradations from GT images."""
@@ -331,9 +363,15 @@ class DatasetGenerator:
             }
         ]
         
-        # Sample some GT files for synthetic generation
-        num_synthetic = min(len(all_gt_files), 500)  # Limit to 500 samples
-        sampled_gt_files = random.sample(all_gt_files, num_synthetic)
+        # Sample GT files for synthetic generation
+        max_synthetic = self.config.get('max_synthetic_samples', None)  # None = use all
+        if max_synthetic and max_synthetic < len(all_gt_files):
+            num_synthetic = max_synthetic
+            sampled_gt_files = random.sample(all_gt_files, num_synthetic)
+            print(f"  Sampling {num_synthetic} GT files for synthetic generation (from {len(all_gt_files)} available)")
+        else:
+            sampled_gt_files = all_gt_files
+            print(f"  Using all {len(all_gt_files)} GT files for synthetic generation")
         
         for gt_file in tqdm(sampled_gt_files, desc="Generating synthetic samples"):
             gt_img = cv2.imread(str(gt_file))
@@ -356,22 +394,41 @@ class DatasetGenerator:
                 
                 # Save with sample name prefix to avoid collisions
                 output_path = deg_dir / f"{sample_name}_{base_name}_syn.png"
+                
+                # Check if this pair already exists
+                gen_rel_path = str(output_path.relative_to(self.output_dir))
+                gt_rel_path = str(gt_file.relative_to(self.output_dir))
+                pair_exists = (gen_rel_path, gt_rel_path) in self.existing_pairs
+                
+                if self.skip_existing and output_path.exists() and pair_exists:
+                    continue  # Skip this synthetic generation
+                
                 cv2.imwrite(str(output_path), cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
                 
-                # Add to pairs
-                self.dataset_pairs.append({
-                    'generated': str(output_path.relative_to(self.output_dir)),
-                    'gt': str(gt_file.relative_to(self.output_dir)),
-                    'loss': deg['loss']
-                })
+                # Add to pairs only if it's new
+                if not pair_exists:
+                    self.dataset_pairs.append({
+                        'generated': gen_rel_path,
+                        'gt': gt_rel_path,
+                        'loss': deg['loss']
+                    })
+                    self.existing_pairs.add((gen_rel_path, gt_rel_path))
     
     def save_dataset_json(self):
         """Save the dataset pairs to a JSON file."""
         output_json = self.output_dir / 'dataset.json'
+        
+        # Count new pairs added in this run
+        new_pairs = len(self.dataset_pairs) - self.initial_pair_count
+        
         with open(output_json, 'w') as f:
             json.dump(self.dataset_pairs, f, indent=2)
         print(f"\nDataset JSON saved to {output_json}")
         print(f"Total pairs: {len(self.dataset_pairs)}")
+        if self.skip_existing and new_pairs > 0:
+            print(f"New pairs added: {new_pairs}")
+        elif self.skip_existing and new_pairs == 0:
+            print("No new pairs added (all files already existed)")
     
     def generate_mismatched_pairs(self):
         """Generate pairs of completely different images for maximum dissimilarity."""
@@ -389,7 +446,7 @@ class DatasetGenerator:
         
         # Generate pairs between different samples
         sample_names = list(sample_gt_files.keys())
-        num_mismatched = self.config.get('num_mismatched_pairs', 100)  # Configurable number
+        num_mismatched = self.config.get('num_mismatched_pairs', 6000)  # Configurable number
         mismatched_count = 0
         
         for i in range(len(sample_names)):
@@ -409,14 +466,21 @@ class DatasetGenerator:
                     file1 = random.choice(files1)
                     file2 = random.choice(files2)
                     
-                    # Add mismatched pair with very high loss (0.95-1.0)
-                    # These are completely different images
-                    self.dataset_pairs.append({
-                        'generated': str(file1.relative_to(self.output_dir)),
-                        'gt': str(file2.relative_to(self.output_dir)),
-                        'loss': random.uniform(0.95, 1.0),  # Very bad match
-                        'type': 'mismatched'  # Tag for identification
-                    })
+                    # Check if this mismatched pair already exists
+                    gen_rel_path = str(file1.relative_to(self.output_dir))
+                    gt_rel_path = str(file2.relative_to(self.output_dir))
+                    pair_exists = (gen_rel_path, gt_rel_path) in self.existing_pairs
+                    
+                    if not pair_exists:
+                        # Add mismatched pair with very high loss (0.95-1.0)
+                        # These are completely different images
+                        self.dataset_pairs.append({
+                            'generated': gen_rel_path,
+                            'gt': gt_rel_path,
+                            'loss': 1.0,  # Very bad match
+                            'type': 'mismatched'  # Tag for identification
+                        })
+                        self.existing_pairs.add((gen_rel_path, gt_rel_path))
                     mismatched_count += 1
                     
                     if mismatched_count >= num_mismatched:
@@ -450,10 +514,12 @@ def main():
     parser.add_argument('config', type=str, help='Path to configuration JSON file')
     parser.add_argument('-o', '--output', type=str, required=True, 
                         help='Output directory for generated dataset')
+    parser.add_argument('--force', action='store_true',
+                        help='Force regeneration of all files (ignore existing)')
     
     args = parser.parse_args()
     
-    generator = DatasetGenerator(args.config, args.output)
+    generator = DatasetGenerator(args.config, args.output, skip_existing=not args.force)
     generator.generate()
     
     print("\nDataset generation complete!")
