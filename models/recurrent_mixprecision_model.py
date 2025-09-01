@@ -598,7 +598,8 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     
                 # Get discriminator predictions for fake samples
                 if hasattr(self.net_d, 'forward_with_features'):
-                    fake_pred, fake_enc_feats, fake_dec_feats = self.net_d.forward_with_features(output_d)
+                    # CIPLAB discriminator returns e_out, d_out, encoder_feats, decoder_feats
+                    fake_pred_e, fake_pred_d, fake_enc_feats, fake_dec_feats = self.net_d.forward_with_features(output_d)
                     
                     # Feature Matching loss (if configured)
                     if hasattr(self, 'cri_fm') and current_iter >= self.fm_start_iter:
@@ -608,7 +609,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                             real_dec_feats = self.real_dec_feats
                         else:
                             with torch.no_grad():
-                                _, real_enc_feats, real_dec_feats = self.net_d.forward_with_features(gt_d)
+                                _, _, real_enc_feats, real_dec_feats = self.net_d.forward_with_features(gt_d)
                         
                         # Use CIPLAB Feature Matching loss
                         l_fm = self.cri_fm(fake_enc_feats, fake_dec_feats, 
@@ -622,16 +623,20 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                         if hasattr(self, 'real_dec_feats'):
                             del self.real_dec_feats
                 else:
-                    fake_pred = self.net_d(output_d)
+                    fake_pred_e, fake_pred_d = self.net_d(output_d)
                     
-                # Adversarial loss for generator
+                # Adversarial loss for generator (CIPLAB-style)
                 if hasattr(self, 'cri_gan'):
-                    l_g_gan = self.cri_gan(fake_pred, True, is_disc=False)
+                    # Apply GAN loss to encoder and decoder outputs separately
+                    l_g_gan_e = self.cri_gan(fake_pred_e, True, is_disc=False)
+                    l_g_gan_d = self.cri_gan(fake_pred_d, True, is_disc=False)
+                    l_g_gan = (l_g_gan_e + l_g_gan_d) / 2  # Average the losses (not the outputs!)
+                    
                     # Apply GAN loss weight from config
                     gan_weight = self.opt['train'].get('gan_opt', {}).get('loss_weight', 0.001)
                     l_total += l_g_gan * gan_weight
                     loss_dict['l_g_gan'] = l_g_gan
-                    loss_dict['out_g_fake'] = torch.mean(fake_pred.detach())
+                    loss_dict['out_g_fake'] = (torch.mean(fake_pred_e.detach()) + torch.mean(fake_pred_d.detach())) / 2
             
             # Scale the loss by accumulation steps to maintain effective learning rate
             l_total = l_total / accumulation_steps
@@ -1151,21 +1156,29 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             
             # Real samples
             if hasattr(self.net_d, 'forward_with_features'):
-                real_pred, self.real_enc_feats, self.real_dec_feats = self.net_d.forward_with_features(gt_d)
+                real_pred_e, real_pred_d, self.real_enc_feats, self.real_dec_feats = self.net_d.forward_with_features(gt_d)
             else:
-                real_pred = self.net_d(gt_d)
-            l_d_real = self.cri_gan(real_pred, True, is_disc=True)
+                real_pred_e, real_pred_d = self.net_d(gt_d)
+            
+            # CIPLAB-style: Apply GAN loss to encoder and decoder outputs separately
+            l_d_real_e = self.cri_gan(real_pred_e, True, is_disc=True)
+            l_d_real_d = self.cri_gan(real_pred_d, True, is_disc=True)
+            l_d_real = l_d_real_e + l_d_real_d  # Sum for discriminator (not average)
             loss_dict['l_d_real'] = l_d_real
-            loss_dict['out_d_real'] = torch.mean(real_pred.detach())
+            loss_dict['out_d_real'] = (torch.mean(real_pred_e.detach()) + torch.mean(real_pred_d.detach())) / 2
             
             # Fake samples (detached to prevent backprop to G)
             if hasattr(self.net_d, 'forward_with_features'):
-                fake_pred, fake_enc_feats, fake_dec_feats = self.net_d.forward_with_features(output_d.detach())
+                fake_pred_e, fake_pred_d, fake_enc_feats, fake_dec_feats = self.net_d.forward_with_features(output_d.detach())
             else:
-                fake_pred = self.net_d(output_d.detach())
-            l_d_fake = self.cri_gan(fake_pred, False, is_disc=True)
+                fake_pred_e, fake_pred_d = self.net_d(output_d.detach())
+                
+            # CIPLAB-style: Apply GAN loss to encoder and decoder outputs separately
+            l_d_fake_e = self.cri_gan(fake_pred_e, False, is_disc=True)
+            l_d_fake_d = self.cri_gan(fake_pred_d, False, is_disc=True)
+            l_d_fake = l_d_fake_e + l_d_fake_d  # Sum for discriminator (not average)
             loss_dict['l_d_fake'] = l_d_fake
-            loss_dict['out_d_fake'] = torch.mean(fake_pred.detach())
+            loss_dict['out_d_fake'] = (torch.mean(fake_pred_e.detach()) + torch.mean(fake_pred_d.detach())) / 2
             
             # CutMix consistency loss (CIPLAB-style)
             l_d_consistency = 0
@@ -1236,23 +1249,30 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # Adjust lambda to exactly match pixel ratio
             lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (batch_mixed.size()[-1] * batch_mixed.size()[-2]))
             
-            # Get discriminator predictions
+            # Get discriminator predictions (using decoder features for CutMix)
             if hasattr(self.net_d, 'forward_with_features'):
-                _, mixed_enc, mixed_dec = self.net_d.forward_with_features(batch_mixed)
+                mixed_e, mixed_d, mixed_enc, mixed_dec = self.net_d.forward_with_features(batch_mixed)
+                # Use decoder's last feature for consistency loss
                 mixed_pred = mixed_dec[-1] if mixed_dec else mixed_enc[-1]
             else:
-                mixed_pred = self.net_d(batch_mixed)
+                mixed_e, mixed_d = self.net_d(batch_mixed)
+                # For discriminators without features, use decoder output
+                mixed_pred = mixed_d
             
             # Create target by mixing real and fake predictions
             with torch.no_grad():
                 if hasattr(self.net_d, 'forward_with_features'):
-                    _, real_enc, real_dec = self.net_d.forward_with_features(real_batch)
-                    _, fake_enc, fake_dec = self.net_d.forward_with_features(fake_batch)
+                    real_e, real_d, real_enc, real_dec = self.net_d.forward_with_features(real_batch)
+                    fake_e, fake_d, fake_enc, fake_dec = self.net_d.forward_with_features(fake_batch)
+                    # Use decoder's last feature for consistency target
                     real_pred = real_dec[-1] if real_dec else real_enc[-1]
                     fake_pred = fake_dec[-1] if fake_dec else fake_enc[-1]
                 else:
-                    real_pred = self.net_d(real_batch)
-                    fake_pred = self.net_d(fake_batch)
+                    real_e, real_d = self.net_d(real_batch)
+                    fake_e, fake_d = self.net_d(fake_batch)
+                    # Use decoder outputs for consistency
+                    real_pred = real_d
+                    fake_pred = fake_d
                 
                 # Mix the predictions according to the cut region
                 target_pred = fake_pred.clone()

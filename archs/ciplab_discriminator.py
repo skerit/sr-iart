@@ -119,16 +119,14 @@ class CIPLABUnetD(nn.Module):
                 m.bias.data.fill_(0)
 
     def forward(self, x):
-        """Forward pass returning scores and features for feature matching
+        """Forward pass returning scores for CIPLAB-style GAN loss
         
         Args:
             x: Input image tensor
             
         Returns:
             e_out: Encoder discriminator score
-            d_out: Decoder discriminator score  
-            e_features: List of encoder features [e1, e2, e3, e4, e5, e6]
-            d_features: List of decoder features [d1, d2, d3, d4, d5, d6]
+            d_out: Decoder discriminator score
         """
         # Encoder
         e1 = self.enc_b1(x)
@@ -150,16 +148,13 @@ class CIPLABUnetD(nn.Module):
 
         d_out = self.dec_out(F.leaky_relu(d6, 0.1))
 
-        # Return average of encoder and decoder outputs as main discriminator score
-        # This matches CIPLAB's approach
-        disc_out = (e_out + d_out) / 2
-
-        return disc_out
+        # Return both outputs separately for CIPLAB-style loss computation
+        return e_out, d_out
     
     def forward_with_features(self, x):
         """Forward pass with features for the training loop that expects this method
         
-        Returns discriminator score and features for feature matching.
+        Returns discriminator scores and features for feature matching.
         """
         # Encoder
         e1 = self.enc_b1(x)
@@ -181,8 +176,6 @@ class CIPLABUnetD(nn.Module):
 
         d_out = self.dec_out(F.leaky_relu(d6, 0.1))
 
-        # Return average of encoder and decoder outputs as main discriminator score
-        disc_out = (e_out + d_out) / 2
-        
-        # Return in format expected by the training loop
-        return disc_out, [e1, e2, e3, e4, e5, e6], [d1, d2, d3, d4, d5, d6]
+        # Return both encoder and decoder outputs separately, plus features
+        # This matches CIPLAB's exact implementation
+        return e_out, d_out, [e1, e2, e3, e4, e5, e6], [d1, d2, d3, d4, d5, d6]
