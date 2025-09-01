@@ -144,8 +144,11 @@ class DatasetGenerator:
         sample_type = sample.get('type', 'images')
         path = self.config_dir / sample['path']
         gt_suffix = sample.get('gt_suffix', '_gt.png')
+        generate_synthetic = sample.get('synthetic', True)
         
         print(f"\nProcessing sample: {sample_name}")
+        if not generate_synthetic:
+            print(f"  (Synthetic generation disabled for this sample)")
         
         # Create output directory for this sample
         sample_dir = self.output_dir / sample_name
@@ -224,8 +227,17 @@ class DatasetGenerator:
         synthetic_dir = self.output_dir / 'synthetic'
         synthetic_dir.mkdir(exist_ok=True)
         
-        # Collect all GT images
-        all_gt_files = list(self.output_dir.glob('*/gt/*.png'))
+        # Collect GT images only from samples that allow synthetic generation
+        all_gt_files = []
+        for sample in self.config.get('samples', []):
+            # Check if synthetic generation is enabled for this sample (default: True)
+            if sample.get('synthetic', True):
+                sample_name = sample['name']
+                sample_gt_files = list((self.output_dir / sample_name / 'gt').glob('*.png'))
+                all_gt_files.extend(sample_gt_files)
+                print(f"  Including {len(sample_gt_files)} GT files from {sample_name} for synthetic generation")
+            else:
+                print(f"  Skipping {sample['name']} (synthetic=false)")
         
         if not all_gt_files:
             print("No GT files found for synthetic generation")
@@ -240,27 +252,27 @@ class DatasetGenerator:
             },
             {
                 'name': 'slight_blur',
-                'loss': 0.60,
+                'loss': 0.50,
                 'operations': [{'type': 'blur', 'kernel_size': 3}]
             },
             {
                 'name': 'heavy_blur',
-                'loss': 0.85,
+                'loss': 0.75,
                 'operations': [{'type': 'blur', 'kernel_size': 7}]
             },
             {
                 'name': 'noise_low',
-                'loss': 0.70,
+                'loss': 0.60,
                 'operations': [{'type': 'noise', 'level': 0.02}]
             },
             {
                 'name': 'noise_high',
-                'loss': 0.86,
+                'loss': 0.76,
                 'operations': [{'type': 'noise', 'level': 0.08}]
             },
             {
                 'name': 'desaturated',
-                'loss': 0.75,
+                'loss': 0.70,
                 'operations': [{'type': 'saturation', 'scale': 0.5}]
             },
             {
@@ -270,22 +282,22 @@ class DatasetGenerator:
             },
             {
                 'name': 'dark',
-                'loss': 0.70,
+                'loss': 0.65,
                 'operations': [{'type': 'brightness', 'scale': 0.7}]
             },
             {
                 'name': 'bright',
-                'loss': 0.70,
+                'loss': 0.65,
                 'operations': [{'type': 'brightness', 'scale': 1.3}]
             },
             {
                 'name': 'hue_shift',
-                'loss': 0.70,
+                'loss': 0.65,
                 'operations': [{'type': 'hue_shift', 'shift': 20}]
             },
             {
                 'name': 'downup_bicubic',
-                'loss': 0.83,
+                'loss': 0.73,
                 'operations': [
                     {'type': 'resize', 'method': 'bicubic', 'scale': 0.25},
                     {'type': 'resize', 'method': 'bicubic', 'scale': 4.0}
@@ -293,7 +305,7 @@ class DatasetGenerator:
             },
             {
                 'name': 'downup_nearest',
-                'loss': 0.85,
+                'loss': 0.75,
                 'operations': [
                     {'type': 'resize', 'method': 'nearest', 'scale': 0.25},
                     {'type': 'resize', 'method': 'nearest', 'scale': 4.0}
@@ -301,17 +313,17 @@ class DatasetGenerator:
             },
             {
                 'name': 'vignette_light',
-                'loss': 0.65,
+                'loss': 0.55,
                 'operations': [{'type': 'vignette', 'strength': 0.3, 'edge_fade': 0.2}]
             },
             {
                 'name': 'vignette_heavy',
-                'loss': 0.70,
+                'loss': 0.60,
                 'operations': [{'type': 'vignette', 'strength': 0.7, 'edge_fade': 0.3}]
             },
             {
                 'name': 'vignette_extreme',
-                'loss': 0.75,
+                'loss': 0.70,
                 'operations': [{'type': 'vignette', 'strength': 0.9, 'edge_fade': 0.15}]
             }
         ]
