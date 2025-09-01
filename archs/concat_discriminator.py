@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import spectral_norm
 
 
 class ConcatDiscriminator(nn.Module):
@@ -20,12 +21,14 @@ class ConcatDiscriminator(nn.Module):
         out_channels = base_channels
         
         for i in range(num_layers):
-            # Use stride 2 for downsampling (except last layer)
-            stride = 2 if i < num_layers - 1 else 1
+            # Only downsample in first 2 layers to preserve detail (4x total downsampling)
+            # This preserves high-frequency information needed for sharpness detection
+            stride = 2 if i < 2 else 1
             
             # Add bias back for better expressiveness
+            # Apply spectral normalization for training stability
             layers.append(
-                nn.Conv2d(current_channels, out_channels, 4, stride, 1, bias=True)
+                spectral_norm(nn.Conv2d(current_channels, out_channels, 4, stride, 1, bias=True))
             )
             
             # Skip BatchNorm on first layer (following standard practice)
@@ -41,7 +44,8 @@ class ConcatDiscriminator(nn.Module):
         
         # Final layer outputs a single channel (quality map)
         # Use 3x3 kernel with padding 1 for better compatibility with various depths
-        self.final = nn.Conv2d(current_channels, 1, 3, 1, 1)
+        # Apply spectral normalization to final layer as well
+        self.final = spectral_norm(nn.Conv2d(current_channels, 1, 3, 1, 1))
         
         # Initialize weights properly
         self._initialize_weights()
@@ -148,10 +152,12 @@ class ConcatDiscriminatorLoss(nn.Module):
         with torch.no_grad():
             # Get raw logits from discriminator
             score_logits = self.discriminator(generated, ground_truth)
+            # Convert to probabilities for regression loss
+            predicted_scores = torch.sigmoid(score_logits)
         
-        # Use BCEWithLogitsLoss for consistency with discriminator training
-        # This gives proper gradients for the generator
-        target = torch.full_like(score_logits, self.target_score)
-        loss = F.binary_cross_entropy_with_logits(score_logits, target)
+        # Use MSE loss for direct regression to target score
+        # Generator should produce outputs that discriminator scores as 0.0 (perfect)
+        target = torch.full_like(predicted_scores, self.target_score)
+        loss = F.mse_loss(predicted_scores, target)
         
         return self.loss_weight * loss

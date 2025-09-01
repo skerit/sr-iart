@@ -14,6 +14,7 @@ from tqdm import tqdm
 import wandb
 
 from archs.concat_discriminator import ConcatDiscriminator
+from archs.patch_discriminator import PatchSharpnessDiscriminator, MultiScalePatchDiscriminator, LocalPatchDiscriminator
 
 
 class PreGeneratedDataset(Dataset):
@@ -137,12 +138,31 @@ def train_discriminator(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Create model
-    model = ConcatDiscriminator(
-        in_channels=6,
-        base_channels=args.base_channels,
-        num_layers=args.num_layers
-    ).to(device)
+    # Create model based on architecture choice
+    if args.arch == 'concat':
+        model = ConcatDiscriminator(
+            in_channels=6,
+            base_channels=args.base_channels,
+            num_layers=args.num_layers
+        ).to(device)
+    elif args.arch == 'patch':
+        model = PatchSharpnessDiscriminator(
+            in_channels=6,
+            base_channels=args.base_channels,
+            num_layers=args.num_layers
+        ).to(device)
+    elif args.arch == 'multiscale':
+        model = MultiScalePatchDiscriminator(
+            base_channels=args.base_channels
+        ).to(device)
+    elif args.arch == 'local':
+        model = LocalPatchDiscriminator(
+            receptive_field=args.local_patch_size,  # Using patch_size as receptive field
+            in_channels=6,
+            base_channels=args.base_channels
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown architecture: {args.arch}")
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
@@ -276,11 +296,10 @@ def train_discriminator(args):
                     # Log worst predictions occasionally
                     if global_iteration % 100 == 0:
                         with torch.no_grad():
-                            # Convert logits to probabilities for meaningful comparison
-                            predicted_probs = torch.sigmoid(predicted_scores)
-                            errors = torch.abs(predicted_probs - target_scores)
+                            # predicted_scores already contains probabilities (after sigmoid)
+                            errors = torch.abs(predicted_scores - target_scores)
                         max_error_idx = torch.argmax(errors)
-                        worst_pred = predicted_probs[max_error_idx].item()
+                        worst_pred = predicted_scores[max_error_idx].item()
                         worst_target = target_scores[max_error_idx].item()
                         worst_error = errors[max_error_idx].item()
                         if worst_error > 0.3:
@@ -368,11 +387,10 @@ def train_discriminator(args):
                     # Log worst predictions occasionally
                     if batch_idx % 100 == 0:
                         with torch.no_grad():
-                            # Convert logits to probabilities for meaningful comparison
-                            predicted_probs = torch.sigmoid(predicted_scores)
-                            errors = torch.abs(predicted_probs - target_scores)
+                            # predicted_scores already contains probabilities (after sigmoid)
+                            errors = torch.abs(predicted_scores - target_scores)
                         max_error_idx = torch.argmax(errors)
-                        worst_pred = predicted_probs[max_error_idx].item()
+                        worst_pred = predicted_scores[max_error_idx].item()
                         worst_target = target_scores[max_error_idx].item()
                         worst_error = errors[max_error_idx].item()
                         if worst_error > 0.3:
@@ -543,10 +561,15 @@ def main():
     parser.add_argument('dataset_dir', type=str, help='Directory containing dataset images')
     
     # Model arguments
-    parser.add_argument('--base_channels', type=int, default=128, 
+    parser.add_argument('--arch', type=str, default='patch',
+                        choices=['concat', 'patch', 'multiscale', 'local'],
+                        help='Discriminator architecture (patch recommended)')
+    parser.add_argument('--base_channels', type=int, default=64, 
                         help='Base number of channels')
-    parser.add_argument('--num_layers', type=int, default=5, 
+    parser.add_argument('--num_layers', type=int, default=4, 
                         help='Number of discriminator layers')
+    parser.add_argument('--local_patch_size', type=int, default=32,
+                        help='Patch size for local discriminator')
     
     # Training arguments
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
