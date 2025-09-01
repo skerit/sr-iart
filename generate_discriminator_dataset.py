@@ -171,8 +171,9 @@ class DatasetGenerator:
             # Get base name for this file
             base_name = gt_file.name.replace(gt_suffix, '')
             
-            # Save GT image
-            gt_output_path = gt_output_dir / gt_file.name
+            # Save GT image with sample name prefix for consistency
+            gt_output_filename = f"{sample_name}_{gt_file.name}"
+            gt_output_path = gt_output_dir / gt_output_filename
             cv2.imwrite(str(gt_output_path), cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR))
             
             # Process each generation configuration
@@ -204,8 +205,8 @@ class DatasetGenerator:
                     target_size=(gt_h, gt_w)
                 )
                 
-                # Save processed image
-                output_filename = f"{base_name}_gen.png"
+                # Save processed image with sample name prefix to avoid collisions
+                output_filename = f"{sample_name}_{base_name}_gen.png"
                 output_path = gen_output_dir / output_filename
                 cv2.imwrite(str(output_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
                 
@@ -335,8 +336,11 @@ class DatasetGenerator:
                 # Apply operations
                 processed = self.apply_operations(gt_img, deg['operations'])
                 
-                # Save
-                output_path = deg_dir / f"{base_name}_syn.png"
+                # Get the sample name from the gt_file path (parent of 'gt' directory)
+                sample_name = gt_file.parent.parent.name
+                
+                # Save with sample name prefix to avoid collisions
+                output_path = deg_dir / f"{sample_name}_{base_name}_syn.png"
                 cv2.imwrite(str(output_path), cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
                 
                 # Add to pairs
