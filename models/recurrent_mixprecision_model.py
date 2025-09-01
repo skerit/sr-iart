@@ -1256,6 +1256,27 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         
         return 0
     
+    def resume_training(self, resume_state):
+        """Resume training from a checkpoint, including discriminator if present."""
+        # Call parent's resume_training to handle optimizers and schedulers
+        super().resume_training(resume_state)
+        
+        # Load discriminator if we're using GAN training and a checkpoint exists
+        if self.use_discriminator:
+            # Get the iteration number from resume_state
+            current_iter = resume_state.get('iter', 0)
+            # Construct discriminator path based on the standard naming convention
+            experiment_root = os.path.dirname(os.path.dirname(self.opt['path'].get('resume_state', '')))
+            net_d_path = os.path.join(experiment_root, 'models', f'net_d_{current_iter}.pth')
+            
+            if os.path.exists(net_d_path):
+                self.load_network(self.net_d, net_d_path, self.opt['path'].get('strict_load_d', True))
+                logger = get_root_logger()
+                logger.info(f"Resumed discriminator from {net_d_path}")
+            else:
+                logger = get_root_logger()
+                logger.warning(f"Discriminator checkpoint not found at {net_d_path}, starting with random weights")
+    
     def save(self, epoch, current_iter):
         """Override save to include discriminator"""
         super().save(epoch, current_iter)
