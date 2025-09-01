@@ -4,8 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
+from basicsr.utils.registry import ARCH_REGISTRY
 
 
+@ARCH_REGISTRY.register()
 class ConcatDiscriminator(nn.Module):
     """Discriminator that compares generated and ground truth images directly.
     

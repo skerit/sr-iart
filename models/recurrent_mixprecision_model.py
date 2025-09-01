@@ -1,13 +1,17 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import math
 import os
 import cv2
+import numpy as np
 from collections import OrderedDict
 import torchvision
 from torch.amp import autocast
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 from basicsr.archs import build_network
+from basicsr.losses import build_loss
 from basicsr.models.sr_model import SRModel
 from basicsr.models.video_recurrent_model import VideoRecurrentModel
 from basicsr.utils import get_root_logger
@@ -36,6 +40,22 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             param_key = self.opt['path'].get('param_key_g', 'params')
             self.load_network(self.net_g, load_path, self.opt['path'].get('strict_load_g', True), param_key)
 
+        # Conditionally initialize discriminator if specified
+        if opt.get('network_d'):
+            self.use_discriminator = True
+            self.net_d = build_network(opt['network_d'])
+            self.net_d = self.net_d.to(self.device)
+            self.print_network(self.net_d)
+            
+            # Load pretrained discriminator if available
+            load_path = self.opt['path'].get('pretrain_network_d', None)
+            if load_path:
+                param_key = self.opt['path'].get('param_key_d', 'params')
+                self.load_network(self.net_d, load_path, 
+                                self.opt['path'].get('strict_load_d', True), param_key)
+        else:
+            self.use_discriminator = False
+            
         if self.is_train:
             self.init_training_settings()
             self.fix_flow_iter = opt['train'].get('fix_flow')
@@ -217,6 +237,38 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                            f"phase_weight {fdl_opt.get('phase_weight', 1.0)}")
             else:
                 self.cri_fdl = None
+                
+            # Initialize discriminator-related losses if discriminator is enabled
+            if self.use_discriminator:
+                from basicsr.utils import get_root_logger
+                logger = get_root_logger()
+                
+                # GAN loss
+                if train_opt.get('gan_opt'):
+                    self.cri_gan = build_loss(train_opt['gan_opt']).to(self.device)
+                    logger.info(f"GAN Loss initialized with type {train_opt['gan_opt'].get('gan_type', 'vanilla')}")
+                    
+                # Feature Matching loss (if specified)
+                if train_opt.get('feature_matching_opt'):
+                    self.cri_fm = nn.L1Loss(reduction='mean').to(self.device)
+                    self.fm_weight = train_opt['feature_matching_opt'].get('loss_weight', 1.0)
+                    self.fm_start_iter = train_opt['feature_matching_opt'].get('start_iter', 75000)
+                    logger.info(f"Feature Matching Loss initialized with weight {self.fm_weight}")
+                    
+                # Consistency/CutMix loss (if specified)  
+                if train_opt.get('consistency_opt'):
+                    self.cri_consistency = nn.MSELoss(reduction='mean').to(self.device)
+                    self.consistency_weight = train_opt['consistency_opt'].get('loss_weight', 1.0)
+                    self.cutmix_prob_max = train_opt['consistency_opt'].get('cutmix_prob_max', 0.5)
+                    self.cutmix_prob_scale = train_opt['consistency_opt'].get('cutmix_prob_scale', 100000)
+                    self.consistency_start_iter = train_opt['consistency_opt'].get('start_iter', 75000)
+                    logger.info(f"CutMix Consistency Loss initialized with weight {self.consistency_weight}")
+                    
+                # D update frequency settings
+                self.net_d_iters = train_opt.get('net_d_iters', 1)
+                self.net_d_init_iters = train_opt.get('net_d_init_iters', 0)
+                self.perceptual_start_iter = train_opt.get('perceptual_start_iter', 75000)
+                logger.info(f"Discriminator training starts at iteration {self.perceptual_start_iter}")
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
@@ -283,8 +335,9 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 },
             ]
 
-        optim_type = train_opt['optim_g'].pop('type')
-        self.optimizer_g = self.get_optimizer(optim_type, optim_params, **train_opt['optim_g'])
+        optim_g_config = train_opt['optim_g'].copy()
+        optim_type = optim_g_config.pop('type')
+        self.optimizer_g = self.get_optimizer(optim_type, optim_params, **optim_g_config)
 
         # # adopt mix precision
         # use_apex_amp = self.opt.get('apex_amp', False)
@@ -297,6 +350,26 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         # adopt DDP
         self.net_g = self.model_to_device(self.net_g)
         self.optimizers.append(self.optimizer_g)
+        
+        # Setup discriminator optimizer if using GAN training
+        if self.use_discriminator:
+            train_opt = self.opt['train']
+            
+            # Discriminator optimizer
+            optim_d_config = train_opt['optim_d'].copy()
+            optim_type_d = optim_d_config.pop('type')
+            self.optimizer_d = self.get_optimizer(
+                optim_type_d, 
+                self.net_d.parameters(), 
+                **optim_d_config
+            )
+            
+            # Apply DDP to discriminator
+            self.net_d = self.model_to_device(self.net_d)
+            self.optimizers.append(self.optimizer_d)
+            
+            logger = get_root_logger()
+            logger.info(f"Discriminator optimizer initialized with {optim_type_d}")
 
     def optimize_parameters(self, scaler, current_iter):
         # Store current iteration for use in optimization
@@ -348,6 +421,20 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             
             # Clamp output to valid range to prevent pure black
             self.output = torch.clamp(self.output, min=0.0, max=1.0)
+            
+        # ========== DISCRIMINATOR UPDATE (if enabled and past pretraining) ==========
+        if self.use_discriminator:
+            use_perceptual = current_iter >= self.perceptual_start_iter
+            
+            # Only update D every net_d_iters and after net_d_init_iters
+            if use_perceptual and current_iter % self.net_d_iters == 0 and current_iter > self.net_d_init_iters:
+                self.optimize_discriminator(scaler, current_iter)
+        else:
+            use_perceptual = False
+            
+        # ========== GENERATOR UPDATE ==========
+        # Continue with generator optimization
+        with autocast('cuda', enabled=use_mixed_precision):
             l_total = 0
             loss_dict = OrderedDict()
             # Check if model is outputting black/invalid/NaN frames
@@ -477,6 +564,53 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 
                 l_total += l_lpips
                 loss_dict['l_lpips'] = l_lpips
+            
+            # ========== GAN-RELATED LOSSES (if discriminator enabled and past pretraining) ==========
+            if self.use_discriminator and use_perceptual:
+                # Freeze D, unfreeze G for generator training
+                for p in self.net_d.parameters():
+                    p.requires_grad = False
+                for p in self.net_g.parameters():
+                    p.requires_grad = True
+                
+                # Reshape video tensors if needed
+                if self.output.dim() == 5:
+                    b, t, c, h, w = self.output.shape
+                    output_d = self.output.view(b * t, c, h, w)
+                    gt_d = self.gt.view(b * t, c, h, w)
+                else:
+                    output_d = self.output
+                    gt_d = self.gt
+                    
+                # Get discriminator predictions for fake samples
+                if hasattr(self.net_d, 'forward_with_features'):
+                    fake_pred, fake_enc_feats, fake_dec_feats = self.net_d.forward_with_features(output_d)
+                    
+                    # Feature Matching loss (if configured)
+                    if hasattr(self, 'cri_fm') and current_iter >= self.fm_start_iter:
+                        # Get real features (use stored from D update if available, else compute)
+                        if hasattr(self, 'real_enc_feats') and hasattr(self, 'real_dec_feats'):
+                            real_features = self.real_enc_feats + self.real_dec_feats
+                        else:
+                            with torch.no_grad():
+                                _, real_enc_feats, real_dec_feats = self.net_d.forward_with_features(gt_d)
+                                real_features = real_enc_feats + real_dec_feats
+                        
+                        fake_features = fake_enc_feats + fake_dec_feats
+                        l_fm = self.compute_feature_matching_loss(fake_features, real_features)
+                        l_total += l_fm * self.fm_weight
+                        loss_dict['l_fm'] = l_fm
+                else:
+                    fake_pred = self.net_d(output_d)
+                    
+                # Adversarial loss for generator
+                if hasattr(self, 'cri_gan'):
+                    l_g_gan = self.cri_gan(fake_pred, True, is_disc=False)
+                    # Apply GAN loss weight from config
+                    gan_weight = self.opt['train'].get('gan_opt', {}).get('loss_weight', 0.001)
+                    l_total += l_g_gan * gan_weight
+                    loss_dict['l_g_gan'] = l_g_gan
+                    loss_dict['out_g_fake'] = torch.mean(fake_pred.detach())
             
             # Scale the loss by accumulation steps to maintain effective learning rate
             l_total = l_total / accumulation_steps
@@ -949,6 +1083,8 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         
         # Set model back to train mode
         self.net_g.train()
+        if self.use_discriminator:
+            self.net_d.train()
         
         # Final cleanup of GPU memory after validation
         if hasattr(self, 'lq'):
@@ -958,5 +1094,149 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         if hasattr(self, 'output'):
             del self.output
         torch.cuda.empty_cache()
+    
+    # ========== DISCRIMINATOR SUPPORT METHODS ==========
+    
+    def optimize_discriminator(self, scaler, current_iter):
+        """Separate discriminator optimization step"""
+        # Freeze G, unfreeze D
+        for p in self.net_g.parameters():
+            p.requires_grad = False
+        for p in self.net_d.parameters():
+            p.requires_grad = True
+            
+        self.optimizer_d.zero_grad()
+        
+        loss_dict = OrderedDict()
+        
+        with autocast('cuda', enabled=self.opt['train'].get('half_precision', True)):
+            # Reshape video tensors if needed
+            if self.gt.dim() == 5:
+                b, t, c, h, w = self.gt.shape
+                gt_d = self.gt.view(b * t, c, h, w)
+                output_d = self.output.view(b * t, c, h, w)
+            else:
+                gt_d = self.gt
+                output_d = self.output
+            
+            # Real samples
+            if hasattr(self.net_d, 'forward_with_features'):
+                real_pred, self.real_enc_feats, self.real_dec_feats = self.net_d.forward_with_features(gt_d)
+            else:
+                real_pred = self.net_d(gt_d)
+            l_d_real = self.cri_gan(real_pred, True, is_disc=True)
+            loss_dict['l_d_real'] = l_d_real
+            loss_dict['out_d_real'] = torch.mean(real_pred.detach())
+            
+            # Fake samples (detached to prevent backprop to G)
+            if hasattr(self.net_d, 'forward_with_features'):
+                fake_pred, fake_enc_feats, fake_dec_feats = self.net_d.forward_with_features(output_d.detach())
+            else:
+                fake_pred = self.net_d(output_d.detach())
+            l_d_fake = self.cri_gan(fake_pred, False, is_disc=True)
+            loss_dict['l_d_fake'] = l_d_fake
+            loss_dict['out_d_fake'] = torch.mean(fake_pred.detach())
+            
+            # CutMix consistency loss (CIPLAB-style)
+            l_d_consistency = 0
+            if hasattr(self, 'cri_consistency') and current_iter >= self.consistency_start_iter:
+                l_d_consistency = self.compute_cutmix_consistency(gt_d, output_d.detach(), current_iter)
+                if l_d_consistency > 0:
+                    loss_dict['l_d_consistency'] = l_d_consistency
+            
+            l_d_total = l_d_real + l_d_fake + l_d_consistency
+        
+        scaler.scale(l_d_total).backward()
+        scaler.unscale_(self.optimizer_d)
+        
+        # Gradient clipping for D
+        if self.opt['train'].get('use_grad_clip', False):
+            max_norm = self.opt['train'].get('grad_clip_norm', 0.1)
+            torch.nn.utils.clip_grad_norm_(self.net_d.parameters(), max_norm=max_norm)
+        
+        scaler.step(self.optimizer_d)
+        scaler.update()
+        
+        # Update log dict
+        self.log_dict.update(self.reduce_loss_dict(loss_dict))
+    
+    def compute_feature_matching_loss(self, fake_features, real_features):
+        """Compute Feature Matching loss across all feature layers"""
+        loss = 0
+        num_features = len(fake_features)
+        for fake_feat, real_feat in zip(fake_features, real_features):
+            loss += self.cri_fm(fake_feat, real_feat.detach())
+        return loss / num_features if num_features > 0 else 0
+    
+    def rand_bbox(self, size, lam):
+        """Generate random bounding box for CutMix"""
+        W = size[2]
+        H = size[3]
+        cut_rat = np.sqrt(1. - lam)
+        cut_w = int(W * cut_rat)
+        cut_h = int(H * cut_rat)
+        
+        # Uniform sampling
+        cx = np.random.randint(W)
+        cy = np.random.randint(H)
+        
+        bbx1 = np.clip(cx - cut_w // 2, 0, W)
+        bby1 = np.clip(cy - cut_h // 2, 0, H)
+        bbx2 = np.clip(cx + cut_w // 2, 0, W)
+        bby2 = np.clip(cy + cut_h // 2, 0, H)
+        
+        return bbx1, bby1, bbx2, bby2
+    
+    def compute_cutmix_consistency(self, real_batch, fake_batch, current_iter):
+        """CIPLAB-style CutMix consistency loss for discriminator regularization"""
+        # Probability increases from 0 to cutmix_prob_max over cutmix_prob_scale iterations
+        p_mix = min(current_iter / self.cutmix_prob_scale, self.cutmix_prob_max)
+        
+        if torch.rand(1).item() <= p_mix:
+            # Create mixed batch
+            batch_mixed = fake_batch.clone()
+            lam = torch.rand(1).item()  # Real/fake ratio
+            
+            bbx1, bby1, bbx2, bby2 = self.rand_bbox(batch_mixed.size(), lam)
+            batch_mixed[:, :, bbx1:bbx2, bby1:bby2] = real_batch[:, :, bbx1:bbx2, bby1:bby2]
+            
+            # Adjust lambda to exactly match pixel ratio
+            lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (batch_mixed.size()[-1] * batch_mixed.size()[-2]))
+            
+            # Get discriminator predictions
+            if hasattr(self.net_d, 'forward_with_features'):
+                _, mixed_enc, mixed_dec = self.net_d.forward_with_features(batch_mixed)
+                mixed_pred = mixed_dec[-1] if mixed_dec else mixed_enc[-1]
+            else:
+                mixed_pred = self.net_d(batch_mixed)
+            
+            # Create target by mixing real and fake predictions
+            with torch.no_grad():
+                if hasattr(self.net_d, 'forward_with_features'):
+                    _, real_enc, real_dec = self.net_d.forward_with_features(real_batch)
+                    _, fake_enc, fake_dec = self.net_d.forward_with_features(fake_batch)
+                    real_pred = real_dec[-1] if real_dec else real_enc[-1]
+                    fake_pred = fake_dec[-1] if fake_dec else fake_enc[-1]
+                else:
+                    real_pred = self.net_d(real_batch)
+                    fake_pred = self.net_d(fake_batch)
+                
+                # Mix the predictions according to the cut region
+                target_pred = fake_pred.clone()
+                target_pred[:, :, bbx1:bbx2, bby1:bby2] = real_pred[:, :, bbx1:bbx2, bby1:bby2]
+            
+            # Consistency loss
+            consistency_loss = self.cri_consistency(mixed_pred, target_pred) * self.consistency_weight
+            return consistency_loss
+        
+        return 0
+    
+    def save(self, epoch, current_iter):
+        """Override save to include discriminator"""
+        super().save(epoch, current_iter)
+        if self.use_discriminator:
+            self.save_network(self.net_d, 'net_d', current_iter)
+            logger = get_root_logger()
+            logger.info(f"Saved discriminator checkpoint at iteration {current_iter}")
 
 
