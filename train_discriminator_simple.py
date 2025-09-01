@@ -95,7 +95,8 @@ def train_discriminator(args):
                 "base_channels": args.base_channels,
                 "num_layers": args.num_layers,
                 "patch_size": args.patch_size,
-            }
+            },
+            resume="allow"  # Allow resuming wandb runs
         )
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -164,22 +165,65 @@ def train_discriminator(args):
     # We'll apply sigmoid to convert logits to 0-1 range, then use MSE
     criterion = nn.MSELoss()
     
-    # Training loop
+    # Resume from checkpoint if provided
+    start_epoch = 0
+    start_iteration = 0
     best_val_loss = float('inf')
     avg_val_loss = float('inf')  # Initialize to prevent NameError when no_val is True
     global_iteration = 0
+    
+    if args.resume:
+        print(f"Resuming from checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        
+        # Load model state
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Restore training state
+        if 'iteration' in checkpoint:
+            start_iteration = checkpoint['iteration']
+            global_iteration = start_iteration
+            print(f"Resuming from iteration {start_iteration}")
+        
+        if 'epoch' in checkpoint:
+            start_epoch = checkpoint['epoch'] + 1  # Start from next epoch
+            print(f"Resuming from epoch {start_epoch}")
+        
+        if 'best_val_loss' in checkpoint:
+            best_val_loss = checkpoint['best_val_loss']
+        elif 'val_loss' in checkpoint:
+            best_val_loss = checkpoint['val_loss']
+        elif 'train_loss' in checkpoint:
+            best_val_loss = checkpoint['train_loss']
+        
+        if 'scheduler_state_dict' in checkpoint and scheduler is not None:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        print(f"Resumed with best_val_loss: {best_val_loss:.4f}")
+    
+    # Training loop
     
     if args.seamless_epochs:
         # Create a single continuous iterator for all epochs
         total_iterations = len(train_loader) * args.epochs
         print(f"Training for {total_iterations} total iterations ({args.epochs} epochs)")
         
-        epoch = 0
-        iteration_in_epoch = 0
+        epoch = start_epoch
+        iteration_in_epoch = start_iteration % len(train_loader) if start_iteration > 0 else 0
         
-        with tqdm(total=total_iterations, desc="Training") as pbar:
+        # Skip already completed iterations
+        if start_iteration > 0:
+            print(f"Skipping {start_iteration} iterations to resume training")
+        
+        with tqdm(total=total_iterations, initial=start_iteration, desc="Training") as pbar:
             for _ in range(args.epochs):
                 for batch_idx, batch in enumerate(train_loader):
+                    # Skip iterations if resuming
+                    if global_iteration < start_iteration:
+                        global_iteration += 1
+                        continue
+                    
                     generated = batch['generated'].to(device)
                     gt = batch['gt'].to(device)
                     target_scores = batch['target_score'].to(device)
@@ -237,8 +281,11 @@ def train_discriminator(args):
                             'epoch': epoch,
                             'model_state_dict': model.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': loss.item()
+                            'loss': loss.item(),
+                            'best_val_loss': best_val_loss
                         }
+                        if scheduler is not None:
+                            iter_checkpoint['scheduler_state_dict'] = scheduler.state_dict()
                         iter_save_path = f"{args.save_dir}/discriminator_iter_{global_iteration}.pth"
                         os.makedirs(args.save_dir, exist_ok=True)
                         torch.save(iter_checkpoint, iter_save_path)
@@ -262,7 +309,7 @@ def train_discriminator(args):
                             print(f"\nSaved epoch checkpoint at epoch {epoch}")
     else:
         # Original epoch-based training
-        for epoch in range(args.epochs):
+        for epoch in range(start_epoch, args.epochs):
             # Training phase
             model.train()
             train_loss = 0
@@ -326,8 +373,11 @@ def train_discriminator(args):
                             'batch_idx': batch_idx,
                             'model_state_dict': model.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': loss.item()
+                            'loss': loss.item(),
+                            'best_val_loss': best_val_loss
                         }
+                        if scheduler is not None:
+                            iter_checkpoint['scheduler_state_dict'] = scheduler.state_dict()
                         iter_save_path = f"{args.save_dir}/discriminator_iter_{global_iteration}.pth"
                         os.makedirs(args.save_dir, exist_ok=True)
                         torch.save(iter_checkpoint, iter_save_path)
@@ -473,6 +523,8 @@ def main():
                         help='No reset between epochs (for ROCm compatibility)')
     parser.add_argument('--num_workers', type=int, default=4, 
                         help='Number of data loading workers')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Path to checkpoint to resume training from')
     
     # Save arguments
     parser.add_argument('--save_dir', type=str, default='experiments/discriminator',
