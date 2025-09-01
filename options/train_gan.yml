@@ -105,6 +105,7 @@ path:
 train:
   # Gradient accumulation
   gradient_accumulation_steps: 8
+  d_gradient_accumulation_steps: 8
 
   ema_decay: 0.99
   

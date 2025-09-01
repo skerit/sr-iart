@@ -1130,7 +1130,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
     # ========== DISCRIMINATOR SUPPORT METHODS ==========
     
     def optimize_discriminator(self, scaler, current_iter):
-        """Separate discriminator optimization step"""
+        """Separate discriminator optimization step with gradient accumulation support"""
         # Freeze G, unfreeze D (only if not already in correct state)
         if not hasattr(self, '_d_training_mode') or not self._d_training_mode:
             for p in self.net_g.parameters():
@@ -1139,8 +1139,17 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 p.requires_grad = True
             self._d_training_mode = True
             self._g_training_mode = False
-            
-        self.optimizer_d.zero_grad()
+        
+        # Get gradient accumulation steps for discriminator (can be different from generator)
+        d_accumulation_steps = self.opt['train'].get('d_gradient_accumulation_steps', 
+                                                     self.opt['train'].get('gradient_accumulation_steps', 1))
+        
+        # Only zero grad at the start of accumulation cycle
+        if not hasattr(self, '_d_accumulation_counter'):
+            self._d_accumulation_counter = 0
+        
+        if self._d_accumulation_counter == 0:
+            self.optimizer_d.zero_grad()
         
         loss_dict = OrderedDict()
         
@@ -1187,18 +1196,29 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 if l_d_consistency > 0:
                     loss_dict['l_d_consistency'] = l_d_consistency
             
-            l_d_total = l_d_real + l_d_fake + l_d_consistency
+            # Scale loss by accumulation steps to maintain effective learning rate
+            l_d_total = (l_d_real + l_d_fake + l_d_consistency) / d_accumulation_steps
         
+        # Accumulate gradients
         scaler.scale(l_d_total).backward()
-        scaler.unscale_(self.optimizer_d)
         
-        # Gradient clipping for D
-        if self.opt['train'].get('use_grad_clip', False):
-            max_norm = self.opt['train'].get('grad_clip_norm', 0.1)
-            torch.nn.utils.clip_grad_norm_(self.net_d.parameters(), max_norm=max_norm)
+        # Increment accumulation counter
+        self._d_accumulation_counter += 1
         
-        scaler.step(self.optimizer_d)
-        scaler.update()
+        # Only update weights after accumulating enough gradients
+        if self._d_accumulation_counter >= d_accumulation_steps:
+            scaler.unscale_(self.optimizer_d)
+            
+            # Gradient clipping for D
+            if self.opt['train'].get('use_grad_clip', False):
+                max_norm = self.opt['train'].get('grad_clip_norm', 0.1)
+                torch.nn.utils.clip_grad_norm_(self.net_d.parameters(), max_norm=max_norm)
+            
+            scaler.step(self.optimizer_d)
+            scaler.update()
+            
+            # Reset accumulation counter
+            self._d_accumulation_counter = 0
         
         # Update or create log dict
         if hasattr(self, 'log_dict'):
