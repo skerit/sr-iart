@@ -1,0 +1,244 @@
+# CIPLAB-NTIRE-2020 Style Training Configuration
+# Uses ALL losses from the NTIRE 2020 winning solution:
+# - Pixel Loss (Huber/Charbonnier)
+# - LPIPS Loss (Perceptual similarity)
+# - Feature Matching Loss (from discriminator)
+# - Adversarial Loss (GAN)
+# - Consistency Loss (CutMix regularization)
+#
+# Two-stage training:
+# Stage 1 (0-75k iter): Pixel loss only
+# Stage 2 (75k-150k iter): All losses combined
+
+# general settings
+name: IART_CIPLAB_AllLosses
+model_type: RecurrentMixPrecisionRTModel
+scale: 4
+num_gpu: 1
+manual_seed: 0
+find_unused_parameters: false
+use_static_graph: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DVDBlurayVideoDataset
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/video_metadata.json
+    val_partition: REDS4
+    test_mode: False
+    io_backend:
+      type: disk
+
+    num_frame: 16
+    gt_size: 384   # CIPLAB uses 384x384 patches
+    interval_list: [1]
+
+    # Augmentation
+    random_reverse: true
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4
+    batch_size_per_gpu: 2  # CIPLAB uses batch_size=2
+    dataset_enlarge_ratio: 10
+    prefetch_mode: 'cuda'
+    pin_memory: true
+
+  val:
+    name: DVDBlurayVideoDataset_Val
+    type: VideoRecurrentDataset
+    dataroot_gt: /workspace/videoset-4x/gt
+    dataroot_lq: /workspace/videoset-4x/lq
+    meta_info_file: /workspace/videoset-4x/val_metadata.json
+    test_mode: True
+    io_backend:
+      type: disk
+    
+    num_frame: 16
+    gt_size: 512
+    interval_list: [1]
+
+    random_reverse: false
+    use_hflip: false
+    use_rot: false
+    
+    use_shuffle: false
+    num_worker_per_gpu: 2
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1
+    pin_memory: true
+
+# network structures
+network_g:
+  type: IART
+  mid_channels: 64
+  embed_dim: 120
+  depths: [6, 6, 6]
+  num_heads: [6, 6, 6]
+  window_size: [3, 8, 8]
+  num_frames: 16
+  img_size: 96  # 384/4 = 96 for LR patch size
+  patch_size: 1
+  cpu_cache_length: 100
+  is_low_res_input: true
+  use_checkpoint: [true, true, true, true]
+  spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
+
+# Discriminator network (U-Net style like CIPLAB)
+network_d:
+  type: UNetDiscriminatorSN  # BasicSR's U-Net discriminator (matches CIPLAB architecture)
+  num_in_ch: 3  # RGB input
+  num_feat: 64  # Feature channels
+  skip_connection: true  # U-Net skip connections for better gradient flow
+
+# path
+path:
+  pretrain_network_g: /workspace/iart_nbl_11600.pth
+  strict_load_g: true
+  pretrain_network_d: ~  # No pretrained discriminator
+  strict_load_d: false
+  resume_state: ~
+
+# training settings
+train:
+  # Gradient accumulation
+  gradient_accumulation_steps: 4
+
+  ema_decay: 0.99
+  
+  # Generator optimizer
+  optim_g:
+    type: Adam
+    lr: !!float 1e-5  # CIPLAB uses 1e-5
+    weight_decay: 0
+    betas: [0.9, 0.999]
+
+  # Discriminator optimizer  
+  optim_d:
+    type: Adam
+    lr: !!float 1e-5  # CIPLAB uses 1e-5
+    weight_decay: 0
+    betas: [0.9, 0.999]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [75000, 125000]
+    gamma: 0.5
+
+  # Total iterations matching CIPLAB
+  total_iter: 50000
+  
+  # Two-stage training threshold
+  perceptual_start_iter: 75000  # Start perceptual losses after MSE pretraining
+
+  # Gradient clipping (CIPLAB uses 0.1)
+  use_grad_clip: true
+  grad_clip_norm: 0.1
+
+  # Mixed precision training
+  half_precision: true
+
+  warmup_iter: 100
+
+  set_DINO_OOM: true
+  
+  high_loss_threshold: 0.9
+  save_high_loss_images: true
+
+  # ========== LOSSES (CIPLAB Configuration) ==========
+  
+  # 1. Pixel Loss (Huber/Smooth L1) - Always active
+  pixel_opt:
+    type: CharbonnierLoss  # Similar to Huber loss used by CIPLAB
+    loss_weight: 1.0
+    reduction: mean
+    eps: !!float 1e-6
+
+  # 2. LPIPS Loss - Starts after perceptual_start_iter
+  lpips_opt:
+    type: LPIPSLoss
+    loss_weight: 0.001  # CIPLAB uses L_LPIPS = 1e-3
+    net_type: alex  # AlexNet backbone (fastest, best metric)
+    use_gpu: true
+    spatial: false  # Return scalar loss
+    version: '0.1'
+    normalize: true  # Input is [0,1], needs conversion to [-1,1]
+    reduction: mean
+
+  # 3. Adversarial Loss - Starts after perceptual_start_iter
+  gan_opt:
+    type: GANLoss
+    gan_type: vanilla  # CIPLAB uses ReLU hinge loss, but vanilla is similar
+    real_label_val: 1.0
+    fake_label_val: 0.0
+    loss_weight: 0.001  # CIPLAB uses L_ADV = 1e-3
+
+  # 4. Feature Matching Loss - Starts after perceptual_start_iter
+  # NOTE: This requires custom implementation to extract discriminator features
+  # You'll need to modify the discriminator to return intermediate features
+  feature_matching_opt:
+    type: L1Loss  # Use L1 to match features
+    loss_weight: 1.0  # CIPLAB uses L_FM = 1
+    reduction: mean
+    # Apply to both encoder and decoder features (6 layers each)
+    num_layers: 12  # 6 encoder + 6 decoder features
+
+  # 5. Consistency Loss (CutMix) - Gradually increases
+  # NOTE: This requires custom implementation in the training loop
+  consistency_opt:
+    type: MSELoss  # MSE for consistency
+    loss_weight: 1.0
+    reduction: mean
+    # CutMix probability increases from 0 to 0.5 over 100k iterations
+    cutmix_prob_max: 0.5
+    cutmix_prob_scale: 100000  # Iterations to reach max probability
+
+  # Discriminator update settings
+  net_d_iters: 1  # Update D once per G update
+  net_d_init_iters: 0  # No special D initialization
+
+  # Manual scheduling for two-stage training
+  manual_seed: 0
+  
+  # Loss weights schedule (optional - can be controlled programmatically)
+  # Stage 1 (0-75k): pixel_weight=1.0, others=0.0
+  # Stage 2 (75k-150k): all weights as specified above
+
+# validation settings
+val:
+  val_freq: 200
+  save_img: true
+  grids: true
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+    # Add LPIPS metric for perceptual quality
+    lpips:
+      type: calculate_lpips
+      net_type: alex
+
+# logging settings
+logger:
+  print_freq: 10
+  save_checkpoint_freq: 200
+  use_tb_logger: true
+  wandb:
+    project: IART-CIPLAB-AllLosses
+    resume_id: IART-CIPLAB-AllLosses
+
+dist_params:
+  backend: nccl
+  port: 29500
