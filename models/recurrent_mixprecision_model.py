@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import os
+import sys
 import cv2
 import numpy as np
 from collections import OrderedDict
@@ -254,10 +255,16 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     
                 # Feature Matching loss (if specified)
                 if train_opt.get('feature_matching_opt'):
-                    self.cri_fm = nn.L1Loss(reduction='mean').to(self.device)
-                    self.fm_weight = train_opt['feature_matching_opt'].get('loss_weight', 1.0)
-                    self.fm_start_iter = train_opt['feature_matching_opt'].get('start_iter', 75000)
-                    logger.info(f"Feature Matching Loss initialized with weight {self.fm_weight}")
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from losses.feature_matching_loss import CIPLABFeatureMatchingLoss
+                    
+                    fm_opt = train_opt['feature_matching_opt']
+                    self.cri_fm = CIPLABFeatureMatchingLoss(
+                        loss_weight=fm_opt.get('loss_weight', 1.0)
+                    ).to(self.device)
+                    self.fm_weight = fm_opt.get('loss_weight', 1.0)
+                    self.fm_start_iter = fm_opt.get('start_iter', 0)
+                    logger.info(f"CIPLAB Feature Matching Loss initialized with weight {self.fm_weight}")
                     
                 # Consistency/CutMix loss (if specified)  
                 if train_opt.get('consistency_opt'):
@@ -597,15 +604,16 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     if hasattr(self, 'cri_fm') and current_iter >= self.fm_start_iter:
                         # Get real features (use stored from D update if available, else compute)
                         if hasattr(self, 'real_enc_feats') and hasattr(self, 'real_dec_feats'):
-                            real_features = self.real_enc_feats + self.real_dec_feats
+                            real_enc_feats = self.real_enc_feats
+                            real_dec_feats = self.real_dec_feats
                         else:
                             with torch.no_grad():
                                 _, real_enc_feats, real_dec_feats = self.net_d.forward_with_features(gt_d)
-                                real_features = real_enc_feats + real_dec_feats
                         
-                        fake_features = fake_enc_feats + fake_dec_feats
-                        l_fm = self.compute_feature_matching_loss(fake_features, real_features)
-                        l_total += l_fm * self.fm_weight
+                        # Use CIPLAB Feature Matching loss
+                        l_fm = self.cri_fm(fake_enc_feats, fake_dec_feats, 
+                                          real_enc_feats, real_dec_feats)
+                        l_total += l_fm  # Loss weight already applied in cri_fm
                         loss_dict['l_fm'] = l_fm
                         
                         # Clean up stored features to prevent memory accumulation

@@ -1,17 +1,10 @@
-# CIPLAB-NTIRE-2020 Style Training Configuration
-# Uses ALL losses from the NTIRE 2020 winning solution:
-# - Pixel Loss (Huber/Charbonnier)
-# - LPIPS Loss (Perceptual similarity)
-# - Feature Matching Loss (from discriminator)
-# - Adversarial Loss (GAN)
-# - Consistency Loss (CutMix regularization)
-#
-# Two-stage training:
-# Stage 1 (0-75k iter): Pixel loss only
-# Stage 2 (75k-150k iter): All losses combined
+# Training Configuration with CIPLAB Feature Matching
+# Uses dual discriminators:
+# 1. Original UNetDiscriminatorSN for standard GAN loss
+# 2. CIPLAB UnetD for Feature Matching loss
 
 # general settings
-name: IART_CIPLAB_FeatureMatching
+name: IART_GAN_with_FeatureMatching
 model_type: RecurrentMixPrecisionRTModel
 scale: 4
 num_gpu: 1
@@ -33,7 +26,7 @@ datasets:
       type: disk
 
     num_frame: 16   # MUST match checkpoint
-    gt_size: 320   # Reduced from 384 to save memory (just patch size, not architecture)
+    gt_size: 256   # Reduced from 384 to save memory (just patch size, not architecture)
     interval_list: [1]
 
     # Augmentation
@@ -89,22 +82,31 @@ network_g:
   use_checkpoint: [true, true, true, true]
   spynet_path: experiments/pretrained_models/flownet/spynet_sintel_final-3d2a1287.pth
 
-# Discriminator network (CIPLAB feature matching)
+# Discriminator 1: Original for standard GAN loss
 network_d:
-  type: CIPLABUnetD
+  type: UNetDiscriminatorSN  # BasicSR's U-Net discriminator
+  num_in_ch: 3  # RGB input
+  num_feat: 64  # Feature channels
+  skip_connection: true  # U-Net skip connections
+
+# Discriminator 2: CIPLAB for Feature Matching
+network_d2:
+  type: CIPLABUnetD  # Our new CIPLAB discriminator
 
 # path
 path:
   pretrain_network_g: /workspace/iart_nbl_11600.pth
   strict_load_g: true
-  pretrain_network_d: ~  # No pretrained discriminator
+  pretrain_network_d: ~  # Load your existing discriminator checkpoint if you have one
   strict_load_d: false
+  pretrain_network_d2: ~  # No pretrained CIPLAB discriminator
+  strict_load_d2: false
   resume_state: ~
 
 # training settings
 train:
   # Gradient accumulation
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 4
 
   ema_decay: 0.99
   
@@ -115,8 +117,15 @@ train:
     weight_decay: 0
     betas: [0.9, 0.999]
 
-  # Discriminator optimizer  
+  # Discriminator 1 optimizer  
   optim_d:
+    type: Adam
+    lr: !!float 1e-5
+    weight_decay: 0
+    betas: [0.9, 0.999]
+
+  # Discriminator 2 (CIPLAB) optimizer
+  optim_d2:
     type: Adam
     lr: !!float 1e-5
     weight_decay: 0
@@ -127,11 +136,11 @@ train:
     milestones: [75000, 125000]
     gamma: 0.5
 
-  # Total iterations matching CIPLAB
+  # Total iterations
   total_iter: 50000
   
-  # Two-stage training threshold
-  perceptual_start_iter: 0  # Start GAN training immediately (0 = from first iteration)
+  # Start perceptual losses immediately since we're resuming from checkpoint
+  perceptual_start_iter: 0
 
   # Gradient clipping (CIPLAB uses 0.1)
   use_grad_clip: true
@@ -147,33 +156,41 @@ train:
   high_loss_threshold: 0.9
   save_high_loss_images: true
 
-  # ========== LOSSES (CIPLAB Configuration) ==========
+  # ========== LOSSES ==========
   
   # 1. Pixel Loss (Huber/Smooth L1) - Always active
   pixel_opt:
-    type: CharbonnierLoss  # Similar to Huber loss used by CIPLAB
+    type: CharbonnierLoss  # Similar to Huber loss
     loss_weight: 1.0
     reduction: mean
     eps: !!float 1e-6
 
-  # 2. LPIPS Loss - Starts immediately
+  # 2. LPIPS Loss
   lpips_opt:
     type: LPIPSLoss
     loss_weight: 0.001  # CIPLAB uses L_LPIPS = 1e-3
-    net_type: alex  # AlexNet backbone (fastest, best metric)
+    net_type: alex
     use_gpu: true
-    spatial: false  # Return scalar loss
+    spatial: false
     version: '0.1'
-    normalize: true  # Input is [0,1], needs conversion to [-1,1]
+    normalize: true
     reduction: mean
 
-  # 3. Feature Matching Loss from Discriminator 2 (CIPLAB)
+  # 3. Adversarial Loss from Discriminator 1
+  gan_opt:
+    type: GANLoss
+    gan_type: hinge
+    real_label_val: 1.0
+    fake_label_val: 0.0
+    loss_weight: 0.001  # CIPLAB uses L_ADV = 1e-3
+
+  # 4. Feature Matching Loss from Discriminator 2 (CIPLAB)
   feature_matching_opt:
     type: CIPLABFeatureMatchingLoss
     loss_weight: 1.0  # CIPLAB uses L_FM = 1
 
-  # 4. Additional GAN loss from CIPLAB discriminator (optional)
-  gan_opt:
+  # 5. Additional GAN loss from CIPLAB discriminator (optional)
+  gan2_opt:
     type: GANLoss
     gan_type: hinge  # ReLU-based like CIPLAB
     real_label_val: 1.0
@@ -184,7 +201,6 @@ train:
   net_d_iters: 1  # Update D once per G update
   net_d_init_iters: 0  # No special D initialization
 
-  # Manual scheduling for two-stage training
   manual_seed: 0
 
 # validation settings
@@ -210,8 +226,8 @@ logger:
   save_checkpoint_freq: 200
   use_tb_logger: true
   wandb:
-    project: IART-CIPLAB-AllLosses
-    resume_id: IART-CIPLAB-AllLosses
+    project: IART-GAN-FeatureMatching
+    resume_id: IART-GAN-FeatureMatching
 
 dist_params:
   backend: nccl
