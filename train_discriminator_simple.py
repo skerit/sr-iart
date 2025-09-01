@@ -19,16 +19,35 @@ from archs.concat_discriminator import ConcatDiscriminator
 class PreGeneratedDataset(Dataset):
     """Dataset that loads pre-generated image pairs."""
     
-    def __init__(self, dataset_json, dataset_dir, patch_size=128):
-        """Initialize with pre-generated dataset."""
+    def __init__(self, dataset_json, dataset_dir, patch_size=128, 
+                 h_flip=False, v_flip=False, rotation=False):
+        """Initialize with pre-generated dataset.
+        
+        Args:
+            dataset_json: Path to dataset JSON file
+            dataset_dir: Directory containing dataset images  
+            patch_size: Size of patches to extract
+            h_flip: Enable random horizontal flipping
+            v_flip: Enable random vertical flipping
+            rotation: Enable random 90-degree rotations
+        """
         self.dataset_dir = Path(dataset_dir)
         self.patch_size = patch_size
+        self.h_flip = h_flip
+        self.v_flip = v_flip
+        self.rotation = rotation
         
         # Load dataset pairs
         with open(dataset_json, 'r') as f:
             self.pairs = json.load(f)
         
         print(f"Loaded {len(self.pairs)} training pairs")
+        if any([h_flip, v_flip, rotation]):
+            augmentations = []
+            if h_flip: augmentations.append("h_flip")
+            if v_flip: augmentations.append("v_flip")
+            if rotation: augmentations.append("rotation")
+            print(f"Augmentations enabled: {', '.join(augmentations)}")
     
     def __len__(self):
         return len(self.pairs)
@@ -68,6 +87,22 @@ class PreGeneratedDataset(Dataset):
             # Resize if too small
             gen_patch = cv2.resize(gen_img, (self.patch_size, self.patch_size))
             gt_patch = cv2.resize(gt_img, (self.patch_size, self.patch_size))
+        
+        # Apply augmentations (same transform to both images to maintain correspondence)
+        if self.h_flip and np.random.random() > 0.5:
+            gen_patch = np.fliplr(gen_patch).copy()
+            gt_patch = np.fliplr(gt_patch).copy()
+        
+        if self.v_flip and np.random.random() > 0.5:
+            gen_patch = np.flipud(gen_patch).copy()
+            gt_patch = np.flipud(gt_patch).copy()
+        
+        if self.rotation:
+            # Random 90-degree rotation (0, 90, 180, or 270 degrees)
+            k = np.random.randint(0, 4)
+            if k > 0:
+                gen_patch = np.rot90(gen_patch, k).copy()
+                gt_patch = np.rot90(gt_patch, k).copy()
         
         # Convert to tensors and normalize
         gen_tensor = torch.from_numpy(gen_patch.transpose(2, 0, 1)).float() / 255.0
@@ -115,7 +150,10 @@ def train_discriminator(args):
     dataset = PreGeneratedDataset(
         args.dataset_json,
         args.dataset_dir,
-        patch_size=args.patch_size
+        patch_size=args.patch_size,
+        h_flip=args.h_flip,
+        v_flip=args.v_flip,
+        rotation=args.rotation
     )
     
     # Split into train/val
@@ -525,6 +563,14 @@ def main():
                         help='Number of data loading workers')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume training from')
+    
+    # Data augmentation arguments
+    parser.add_argument('--h_flip', action='store_true',
+                        help='Enable random horizontal flipping during training')
+    parser.add_argument('--v_flip', action='store_true',
+                        help='Enable random vertical flipping during training')
+    parser.add_argument('--rotation', action='store_true',
+                        help='Enable random 90-degree rotations during training')
     
     # Save arguments
     parser.add_argument('--save_dir', type=str, default='experiments/discriminator',
