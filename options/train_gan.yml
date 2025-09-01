@@ -221,10 +221,6 @@ val:
       type: calculate_ssim
       crop_border: 0
       test_y_channel: false
-    # Add LPIPS metric for perceptual quality
-    lpips:
-      type: calculate_lpips
-      net_type: alex
 
 # logging settings
 logger:
