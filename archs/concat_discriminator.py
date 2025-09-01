@@ -16,6 +16,20 @@ class ConcatDiscriminator(nn.Module):
     def __init__(self, in_channels=6, base_channels=128, num_layers=5):
         super().__init__()
         
+        # High-resolution branch (minimal downsampling for fine detail)
+        # Only downsample once to 64x64 to preserve sharpness information
+        self.high_res_branch = nn.Sequential(
+            spectral_norm(nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1, bias=True)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(base_channels, base_channels, 3, stride=1, padding=1, bias=True)),
+            nn.BatchNorm2d(base_channels),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(base_channels, base_channels//2, 3, stride=1, padding=1, bias=True)),
+            nn.BatchNorm2d(base_channels//2),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        
+        # Main branch (original architecture)
         layers = []
         current_channels = in_channels
         out_channels = base_channels
@@ -42,10 +56,14 @@ class ConcatDiscriminator(nn.Module):
         
         self.features = nn.Sequential(*layers)
         
-        # Final layer outputs a single channel (quality map)
-        # Use 3x3 kernel with padding 1 for better compatibility with various depths
-        # Apply spectral normalization to final layer as well
-        self.final = spectral_norm(nn.Conv2d(current_channels, 1, 3, 1, 1))
+        # Combine high-res and main branch outputs
+        # High-res branch outputs base_channels//2 channels at 64x64
+        # Main branch outputs 512 channels at 32x32
+        # We'll process each separately then combine scores
+        
+        # Final layers for each branch
+        self.high_res_final = spectral_norm(nn.Conv2d(base_channels//2, 1, 3, 1, 1))
+        self.main_final = spectral_norm(nn.Conv2d(current_channels, 1, 3, 1, 1))
         
         # Initialize weights properly
         self._initialize_weights()
@@ -63,22 +81,35 @@ class ConcatDiscriminator(nn.Module):
         # Concatenate along channel dimension
         combined = torch.cat([generated, ground_truth], dim=1)  # [B, 6, H, W]
         
-        # Extract features
-        features = self.features(combined)
+        # Process through both branches
+        # High-res branch: 128x128 -> 64x64, focuses on fine details
+        high_res_features = self.high_res_branch(combined)
+        high_res_score_map = self.high_res_final(high_res_features)  # [B, 1, 64, 64]
+        high_res_score = high_res_score_map.mean(dim=[2, 3])  # [B, 1]
         
-        # Get quality map
-        quality_map = self.final(features)  # [B, 1, H', W']
+        # Main branch: 128x128 -> 32x32, captures global patterns
+        main_features = self.features(combined)
+        main_score_map = self.main_final(main_features)  # [B, 1, 32, 32]
+        main_score = main_score_map.mean(dim=[2, 3])  # [B, 1]
         
-        # Global average pooling to get single score per image
-        # Return raw logits - sigmoid will be handled by BCEWithLogitsLoss if needed
-        score = quality_map.mean(dim=[2, 3])  # [B, 1]
+        # Combine scores with weighted average
+        # High-res branch is weighted more (0.6) for sharpness detection
+        # Main branch (0.4) for overall quality
+        score = 0.6 * high_res_score + 0.4 * main_score
+        
+        # Apply sigmoid to convert logits to 0-1 probability
+        # 0 = perfect match, 1 = very different
+        score = torch.sigmoid(score)
         
         return score
     
     def forward_with_sigmoid(self, generated, ground_truth):
-        """Forward pass with sigmoid for inference/testing."""
-        logits = self.forward(generated, ground_truth)
-        return torch.sigmoid(logits)
+        """Forward pass with sigmoid for inference/testing.
+        
+        Note: Sigmoid is already applied in forward(), so this just calls forward().
+        Kept for backward compatibility.
+        """
+        return self.forward(generated, ground_truth)
     
     def _initialize_weights(self):
         """Proper weight initialization for better training."""
@@ -92,10 +123,13 @@ class ConcatDiscriminator(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
         
-        # Special initialization for final layer to break symmetry
+        # Special initialization for final layers to break symmetry
         # Initialize to output different values for different inputs
-        nn.init.normal_(self.final.weight, mean=0, std=0.1)
-        nn.init.constant_(self.final.bias, -2.0)  # Bias towards 0.12 after sigmoid
+        nn.init.normal_(self.high_res_final.weight, mean=0, std=0.1)
+        nn.init.constant_(self.high_res_final.bias, 0.0)  # Start neutral
+        
+        nn.init.normal_(self.main_final.weight, mean=0, std=0.1)
+        nn.init.constant_(self.main_final.bias, 0.0)  # Start neutral
     
     def get_feature_maps(self, generated, ground_truth):
         """Get intermediate feature maps for loss calculation.
@@ -150,10 +184,8 @@ class ConcatDiscriminatorLoss(nn.Module):
             Loss value (scalar)
         """
         with torch.no_grad():
-            # Get raw logits from discriminator
-            score_logits = self.discriminator(generated, ground_truth)
-            # Convert to probabilities for regression loss
-            predicted_scores = torch.sigmoid(score_logits)
+            # Get scores from discriminator (already in 0-1 range with sigmoid)
+            predicted_scores = self.discriminator(generated, ground_truth)
         
         # Use MSE loss for direct regression to target score
         # Generator should produce outputs that discriminator scores as 0.0 (perfect)
