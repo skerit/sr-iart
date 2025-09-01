@@ -134,10 +134,14 @@ class PreGeneratedDataset(Dataset):
         gen_tensor = torch.from_numpy(gen_patch.transpose(2, 0, 1).copy()).float() / 255.0
         gt_tensor = torch.from_numpy(gt_patch.transpose(2, 0, 1).copy()).float() / 255.0
         
+        # Create target_score tensor in a way that's compatible with DataLoader collation
+        # Using torch.as_tensor instead of torch.tensor to avoid storage resizing issues
+        target_score = torch.as_tensor([pair['loss']], dtype=torch.float32)
+        
         return {
             'generated': gen_tensor,
             'gt': gt_tensor,
-            'target_score': torch.tensor(pair['loss'], dtype=torch.float32).unsqueeze(0)
+            'target_score': target_score
         }
 
 
