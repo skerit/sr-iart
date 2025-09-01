@@ -71,6 +71,16 @@ python test_scripts/BD/Vimeo-90K/test_IART_UDM10.py
 - VideoDataset: General video dataset implementation
 - Supports multi-scale training with configurable patch sizes
 
+### Baseline images
+
+In typical video super-resolution models, there's often a "baseline" upsampled image (usually created through simple interpolation like bilinear or bicubic) that serves as an initial reference or residual connection.
+The model then learns to refine this baseline.
+
+We have now removed this baseline image from the IART model, so it works directly on the features without relying on a pre-upsampled reference.
+This means the model now generates the high-resolution output entirely from the learned features through the transformer blocks and pixel shuffle operations, rather than adding refinements to an existing upsampled baseline.
+
+This change could potentially allow the model to learn more powerful representations since it's not constrained by the initial interpolation artifacts from the baseline.
+
 ### Configuration System
 
 Training configurations are YAML-based (`options/`) with key parameters:
