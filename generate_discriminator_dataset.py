@@ -13,11 +13,23 @@ import random
 class DatasetGenerator:
     """Generate discriminator training dataset from config."""
     
-    def __init__(self, config_path, output_dir, skip_existing=True):
-        """Initialize generator with config and output directory."""
+    def __init__(self, config_path, output_dir, skip_existing=True, image_format='jpg', quality=85, max_size=None):
+        """Initialize generator with config and output directory.
+        
+        Args:
+            config_path: Path to config JSON file
+            output_dir: Output directory for dataset
+            skip_existing: Skip existing files
+            image_format: 'jpg' or 'png' (default: 'jpg' for compression)
+            quality: JPEG quality (1-100, default: 85)
+            max_size: Maximum dimension for images (None = original size)
+        """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.skip_existing = skip_existing
+        self.image_format = image_format.lower()
+        self.quality = quality
+        self.max_size = max_size
         
         with open(config_path, 'r') as f:
             self.config = json.load(f)
@@ -154,6 +166,30 @@ class DatasetGenerator:
         
         return result
     
+    def save_image(self, image, output_path):
+        """Save image with compression settings."""
+        # Resize if max_size is set
+        if self.max_size:
+            h, w = image.shape[:2]
+            if h > self.max_size or w > self.max_size:
+                scale = self.max_size / max(h, w)
+                new_h = int(h * scale)
+                new_w = int(w * scale)
+                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        # Convert path extension based on format
+        output_path = Path(str(output_path).replace('.png', f'.{self.image_format}'))
+        
+        # Save with appropriate format
+        if self.image_format == 'jpg' or self.image_format == 'jpeg':
+            cv2.imwrite(str(output_path), image, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
+        else:
+            # PNG with compression (0-9, where 9 is max compression)
+            png_compression = min(9, max(0, (100 - self.quality) // 10))
+            cv2.imwrite(str(output_path), image, [cv2.IMWRITE_PNG_COMPRESSION, png_compression])
+        
+        return output_path
+    
     def process_sample(self, sample):
         """Process a single sample configuration."""
         sample_name = sample['name']
@@ -195,7 +231,7 @@ class DatasetGenerator:
             base_name = gt_file.name.replace(gt_suffix, '')
             
             # Save GT image with sample name prefix for consistency
-            gt_output_filename = f"{sample_name}_{gt_file.name}"
+            gt_output_filename = f"{sample_name}_{gt_file.stem}.{self.image_format}"
             gt_output_path = gt_output_dir / gt_output_filename
             
             # Skip if GT file already exists
@@ -204,7 +240,7 @@ class DatasetGenerator:
                 if generate_synthetic:
                     self.gt_files_by_sample[sample_name].append(gt_output_path)
             else:
-                cv2.imwrite(str(gt_output_path), cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR))
+                self.save_image(cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR), gt_output_path)
                 # Track this GT file if synthetic generation is enabled
                 if generate_synthetic:
                     self.gt_files_by_sample[sample_name].append(gt_output_path)
@@ -239,7 +275,7 @@ class DatasetGenerator:
                 )
                 
                 # Save processed image with sample name prefix to avoid collisions
-                output_filename = f"{sample_name}_{base_name}_gen.png"
+                output_filename = f"{sample_name}_{base_name}_gen.{self.image_format}"
                 output_path = gen_output_dir / output_filename
                 
                 # Check if this pair already exists
@@ -250,7 +286,7 @@ class DatasetGenerator:
                 if self.skip_existing and output_path.exists() and pair_exists:
                     continue  # Skip this generation
                 
-                cv2.imwrite(str(output_path), cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR))
+                self.save_image(cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR), output_path)
                 
                 # Add to dataset pairs only if it's new
                 if not pair_exists:
@@ -393,7 +429,7 @@ class DatasetGenerator:
                 sample_name = gt_file.parent.parent.name
                 
                 # Save with sample name prefix to avoid collisions
-                output_path = deg_dir / f"{sample_name}_{base_name}_syn.png"
+                output_path = deg_dir / f"{sample_name}_{base_name}_syn.{self.image_format}"
                 
                 # Check if this pair already exists
                 gen_rel_path = str(output_path.relative_to(self.output_dir))
@@ -403,7 +439,7 @@ class DatasetGenerator:
                 if self.skip_existing and output_path.exists() and pair_exists:
                     continue  # Skip this synthetic generation
                 
-                cv2.imwrite(str(output_path), cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
+                self.save_image(cv2.cvtColor(processed, cv2.COLOR_RGB2BGR), output_path)
                 
                 # Add to pairs only if it's new
                 if not pair_exists:
@@ -516,10 +552,23 @@ def main():
                         help='Output directory for generated dataset')
     parser.add_argument('--force', action='store_true',
                         help='Force regeneration of all files (ignore existing)')
+    parser.add_argument('--format', type=str, default='jpg', choices=['jpg', 'jpeg', 'png'],
+                        help='Image format (default: jpg for smaller size)')
+    parser.add_argument('--quality', type=int, default=85,
+                        help='JPEG quality 1-100 or PNG compression (default: 85)')
+    parser.add_argument('--max-size', type=int, default=None,
+                        help='Maximum image dimension in pixels (default: original size)')
     
     args = parser.parse_args()
     
-    generator = DatasetGenerator(args.config, args.output, skip_existing=not args.force)
+    generator = DatasetGenerator(
+        args.config, 
+        args.output, 
+        skip_existing=not args.force,
+        image_format=args.format,
+        quality=args.quality,
+        max_size=args.max_size
+    )
     generator.generate()
     
     print("\nDataset generation complete!")
