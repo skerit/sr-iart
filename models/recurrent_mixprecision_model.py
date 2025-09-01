@@ -243,6 +243,10 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 from basicsr.utils import get_root_logger
                 logger = get_root_logger()
                 
+                # Initialize safe defaults for all GAN-related parameters
+                self.fm_start_iter = float('inf')  # Disabled by default
+                self.consistency_start_iter = float('inf')  # Disabled by default
+                
                 # GAN loss
                 if train_opt.get('gan_opt'):
                     self.cri_gan = build_loss(train_opt['gan_opt']).to(self.device)
@@ -567,11 +571,14 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             
             # ========== GAN-RELATED LOSSES (if discriminator enabled and past pretraining) ==========
             if self.use_discriminator and use_perceptual:
-                # Freeze D, unfreeze G for generator training
-                for p in self.net_d.parameters():
-                    p.requires_grad = False
-                for p in self.net_g.parameters():
-                    p.requires_grad = True
+                # Freeze D, unfreeze G for generator training (only if not already in correct state)
+                if not hasattr(self, '_g_training_mode') or not self._g_training_mode:
+                    for p in self.net_d.parameters():
+                        p.requires_grad = False
+                    for p in self.net_g.parameters():
+                        p.requires_grad = True
+                    self._g_training_mode = True
+                    self._d_training_mode = False
                 
                 # Reshape video tensors if needed
                 if self.output.dim() == 5:
@@ -600,6 +607,12 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                         l_fm = self.compute_feature_matching_loss(fake_features, real_features)
                         l_total += l_fm * self.fm_weight
                         loss_dict['l_fm'] = l_fm
+                        
+                        # Clean up stored features to prevent memory accumulation
+                        if hasattr(self, 'real_enc_feats'):
+                            del self.real_enc_feats
+                        if hasattr(self, 'real_dec_feats'):
+                            del self.real_dec_feats
                 else:
                     fake_pred = self.net_d(output_d)
                     
@@ -1105,11 +1118,14 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
     
     def optimize_discriminator(self, scaler, current_iter):
         """Separate discriminator optimization step"""
-        # Freeze G, unfreeze D
-        for p in self.net_g.parameters():
-            p.requires_grad = False
-        for p in self.net_d.parameters():
-            p.requires_grad = True
+        # Freeze G, unfreeze D (only if not already in correct state)
+        if not hasattr(self, '_d_training_mode') or not self._d_training_mode:
+            for p in self.net_g.parameters():
+                p.requires_grad = False
+            for p in self.net_d.parameters():
+                p.requires_grad = True
+            self._d_training_mode = True
+            self._g_training_mode = False
             
         self.optimizer_d.zero_grad()
         
