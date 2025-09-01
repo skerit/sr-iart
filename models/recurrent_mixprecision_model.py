@@ -689,7 +689,13 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # l_total.backward()
             # self.optimizer_g.step()
 
-            self.log_dict = self.reduce_loss_dict(loss_dict)
+            # Merge discriminator losses if they exist
+            if hasattr(self, 'log_dict'):
+                # Discriminator already ran and created log_dict
+                self.log_dict.update(self.reduce_loss_dict(loss_dict))
+            else:
+                # Normal case - create log_dict from generator losses
+                self.log_dict = self.reduce_loss_dict(loss_dict)
             
             # Log detailed losses every 50 iterations to debug learning
             if self.current_iter % 50 == 0:
@@ -1157,8 +1163,11 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
         scaler.step(self.optimizer_d)
         scaler.update()
         
-        # Update log dict
-        self.log_dict.update(self.reduce_loss_dict(loss_dict))
+        # Update or create log dict
+        if hasattr(self, 'log_dict'):
+            self.log_dict.update(self.reduce_loss_dict(loss_dict))
+        else:
+            self.log_dict = self.reduce_loss_dict(loss_dict)
     
     def compute_feature_matching_loss(self, fake_features, real_features):
         """Compute Feature Matching loss across all feature layers"""
