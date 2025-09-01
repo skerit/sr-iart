@@ -62,14 +62,23 @@ class PreGeneratedDataset(Dataset):
         gt_path = self.dataset_dir / pair['gt']
         
         gen_img = cv2.imread(str(gen_path))
-        if gen_img is None:
-            print(f"Warning: Could not load {gen_path}")
+        if gen_img is None or gen_img.size == 0:
+            print(f"Warning: Could not load or empty image {gen_path}")
             # Return a random valid pair instead
             return self.__getitem__(np.random.randint(0, len(self)))
         
         gt_img = cv2.imread(str(gt_path))
-        if gt_img is None:
-            print(f"Warning: Could not load {gt_path}")
+        if gt_img is None or gt_img.size == 0:
+            print(f"Warning: Could not load or empty image {gt_path}")
+            return self.__getitem__(np.random.randint(0, len(self)))
+        
+        # Check image dimensions
+        if gen_img.shape[0] == 0 or gen_img.shape[1] == 0:
+            print(f"Warning: Zero dimension in generated image {gen_path}: shape={gen_img.shape}")
+            return self.__getitem__(np.random.randint(0, len(self)))
+        
+        if gt_img.shape[0] == 0 or gt_img.shape[1] == 0:
+            print(f"Warning: Zero dimension in GT image {gt_path}: shape={gt_img.shape}")
             return self.__getitem__(np.random.randint(0, len(self)))
         
         # Convert to RGB
@@ -78,16 +87,32 @@ class PreGeneratedDataset(Dataset):
         
         # Random crop to patch size
         h, w = gen_img.shape[:2]
-        if h > self.patch_size and w > self.patch_size:
+        if h >= self.patch_size and w >= self.patch_size:
             # Random crop
-            top = np.random.randint(0, h - self.patch_size)
-            left = np.random.randint(0, w - self.patch_size)
+            top = np.random.randint(0, h - self.patch_size + 1)
+            left = np.random.randint(0, w - self.patch_size + 1)
             gen_patch = gen_img[top:top+self.patch_size, left:left+self.patch_size]
             gt_patch = gt_img[top:top+self.patch_size, left:left+self.patch_size]
         else:
             # Resize if too small
-            gen_patch = cv2.resize(gen_img, (self.patch_size, self.patch_size))
-            gt_patch = cv2.resize(gt_img, (self.patch_size, self.patch_size))
+            try:
+                gen_patch = cv2.resize(gen_img, (self.patch_size, self.patch_size))
+                gt_patch = cv2.resize(gt_img, (self.patch_size, self.patch_size))
+            except Exception as e:
+                print(f"Warning: Failed to resize images - gen_img shape: {gen_img.shape}, gt_img shape: {gt_img.shape}")
+                print(f"Error: {e}")
+                return self.__getitem__(np.random.randint(0, len(self)))
+        
+        # Ensure patches have the correct shape
+        if gen_patch.shape != (self.patch_size, self.patch_size, 3):
+            print(f"Warning: Invalid gen_patch shape after crop/resize: {gen_patch.shape}, expected ({self.patch_size}, {self.patch_size}, 3)")
+            print(f"  Original gen_img shape: {gen_img.shape}, Image path: {gen_path}")
+            return self.__getitem__(np.random.randint(0, len(self)))
+        
+        if gt_patch.shape != (self.patch_size, self.patch_size, 3):
+            print(f"Warning: Invalid gt_patch shape after crop/resize: {gt_patch.shape}, expected ({self.patch_size}, {self.patch_size}, 3)")
+            print(f"  Original gt_img shape: {gt_img.shape}, Image path: {gt_path}")
+            return self.__getitem__(np.random.randint(0, len(self)))
         
         # Apply augmentations (same transform to both images to maintain correspondence)
         if self.h_flip and np.random.random() > 0.5:
@@ -106,13 +131,13 @@ class PreGeneratedDataset(Dataset):
                 gt_patch = np.rot90(gt_patch, k).copy()
         
         # Convert to tensors and normalize
-        gen_tensor = torch.from_numpy(gen_patch.transpose(2, 0, 1)).float() / 255.0
-        gt_tensor = torch.from_numpy(gt_patch.transpose(2, 0, 1)).float() / 255.0
+        gen_tensor = torch.from_numpy(gen_patch.transpose(2, 0, 1).copy()).float() / 255.0
+        gt_tensor = torch.from_numpy(gt_patch.transpose(2, 0, 1).copy()).float() / 255.0
         
         return {
             'generated': gen_tensor,
             'gt': gt_tensor,
-            'target_score': torch.tensor([pair['loss']], dtype=torch.float32)
+            'target_score': torch.tensor(pair['loss'], dtype=torch.float32).unsqueeze(0)
         }
 
 
