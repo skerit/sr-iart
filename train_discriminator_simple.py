@@ -227,7 +227,6 @@ def train_discriminator(args):
     start_epoch = 0
     start_iteration = 0
     best_val_loss = float('inf')
-    avg_val_loss = float('inf')  # Initialize to prevent NameError when no_val is True
     global_iteration = 0
     
     if args.resume:
@@ -261,6 +260,8 @@ def train_discriminator(args):
         print(f"Resumed with best_val_loss: {best_val_loss:.4f}")
     
     # Training loop
+    avg_train_loss = 0.0  # Initialize for seamless epochs mode
+    avg_val_loss = float('inf') if args.no_val else 0.0  # Initialize to prevent NameError
     
     if args.seamless_epochs:
         # Create a single continuous iterator for all epochs
@@ -453,8 +454,11 @@ def train_discriminator(args):
                         gt = batch['gt'].to(device)
                         target_scores = batch['target_score'].to(device)
                         
-                        predicted_scores = model(generated, gt)
-                        loss = criterion(predicted_scores, target_scores)
+                        predicted_logits = model(generated, gt)
+                        # Apply sigmoid to get probabilities for regression
+                        predicted_scores = torch.sigmoid(predicted_logits)
+                        # Scale loss by 100 to match training
+                        loss = criterion(predicted_scores, target_scores) * 100
                         
                         val_loss += loss.item()
                         pbar.set_postfix({'loss': f"{loss.item():.4f}"})

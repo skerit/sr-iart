@@ -23,6 +23,7 @@ class DatasetGenerator:
         
         self.config_dir = Path(config_path).parent
         self.dataset_pairs = []
+        self.gt_files_by_sample = {}  # Track GT files per sample for synthetic generation
         
     def apply_operations(self, image, operations, target_size=None):
         """Apply a series of operations to an image."""
@@ -162,6 +163,10 @@ class DatasetGenerator:
         gt_output_dir = sample_dir / 'gt'
         gt_output_dir.mkdir(exist_ok=True)
         
+        # Track GT files for this sample if synthetic generation is enabled
+        if generate_synthetic:
+            self.gt_files_by_sample[sample_name] = []
+        
         for gt_file in tqdm(gt_files, desc="Processing files"):
             # Load GT image
             gt_img = cv2.imread(str(gt_file))
@@ -178,6 +183,10 @@ class DatasetGenerator:
             gt_output_filename = f"{sample_name}_{gt_file.name}"
             gt_output_path = gt_output_dir / gt_output_filename
             cv2.imwrite(str(gt_output_path), cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR))
+            
+            # Track this GT file if synthetic generation is enabled
+            if generate_synthetic:
+                self.gt_files_by_sample[sample_name].append(gt_output_path)
             
             # Process each generation configuration
             for gen_config in sample.get('generations', []):
@@ -227,17 +236,11 @@ class DatasetGenerator:
         synthetic_dir = self.output_dir / 'synthetic'
         synthetic_dir.mkdir(exist_ok=True)
         
-        # Collect GT images only from samples that allow synthetic generation
+        # Use the GT files we tracked during processing
         all_gt_files = []
-        for sample in self.config.get('samples', []):
-            # Check if synthetic generation is enabled for this sample (default: True)
-            if sample.get('synthetic', True):
-                sample_name = sample['name']
-                sample_gt_files = list((self.output_dir / sample_name / 'gt').glob('*.png'))
-                all_gt_files.extend(sample_gt_files)
-                print(f"  Including {len(sample_gt_files)} GT files from {sample_name} for synthetic generation")
-            else:
-                print(f"  Skipping {sample['name']} (synthetic=false)")
+        for sample_name, gt_files in self.gt_files_by_sample.items():
+            all_gt_files.extend(gt_files)
+            print(f"  Including {len(gt_files)} GT files from {sample_name} for synthetic generation")
         
         if not all_gt_files:
             print("No GT files found for synthetic generation")
@@ -370,6 +373,60 @@ class DatasetGenerator:
         print(f"\nDataset JSON saved to {output_json}")
         print(f"Total pairs: {len(self.dataset_pairs)}")
     
+    def generate_mismatched_pairs(self):
+        """Generate pairs of completely different images for maximum dissimilarity."""
+        print("\nGenerating mismatched pairs (completely different images)...")
+        
+        # Use the GT files we tracked during processing
+        sample_gt_files = {name: files for name, files in self.gt_files_by_sample.items() if files}
+        
+        if len(sample_gt_files) < 2:
+            print("  Need at least 2 different samples to create mismatched pairs")
+            return
+        
+        for sample_name, files in sample_gt_files.items():
+            print(f"  Found {len(files)} GT files in {sample_name}")
+        
+        # Generate pairs between different samples
+        sample_names = list(sample_gt_files.keys())
+        num_mismatched = self.config.get('num_mismatched_pairs', 100)  # Configurable number
+        mismatched_count = 0
+        
+        for i in range(len(sample_names)):
+            for j in range(i + 1, len(sample_names)):
+                sample1 = sample_names[i]
+                sample2 = sample_names[j]
+                
+                # Get files from each sample
+                files1 = sample_gt_files[sample1]
+                files2 = sample_gt_files[sample2]
+                
+                # Create some pairs (limit to avoid explosion)
+                pairs_to_create = min(10, len(files1), len(files2), num_mismatched - mismatched_count)
+                
+                for k in range(pairs_to_create):
+                    # Pick random files from each sample
+                    file1 = random.choice(files1)
+                    file2 = random.choice(files2)
+                    
+                    # Add mismatched pair with very high loss (0.95-1.0)
+                    # These are completely different images
+                    self.dataset_pairs.append({
+                        'generated': str(file1.relative_to(self.output_dir)),
+                        'gt': str(file2.relative_to(self.output_dir)),
+                        'loss': random.uniform(0.95, 1.0),  # Very bad match
+                        'type': 'mismatched'  # Tag for identification
+                    })
+                    mismatched_count += 1
+                    
+                    if mismatched_count >= num_mismatched:
+                        break
+                
+                if mismatched_count >= num_mismatched:
+                    break
+        
+        print(f"  Generated {mismatched_count} mismatched pairs")
+    
     def generate(self):
         """Generate the complete dataset."""
         # Process each sample in config
@@ -379,6 +436,10 @@ class DatasetGenerator:
         # Generate synthetic samples
         if self.config.get('generate_synthetic', True):
             self.generate_synthetic_samples()
+        
+        # Generate mismatched pairs (completely different images)
+        if self.config.get('generate_mismatched', True):
+            self.generate_mismatched_pairs()
         
         # Save dataset JSON
         self.save_dataset_json()
