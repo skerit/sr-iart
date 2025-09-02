@@ -167,6 +167,7 @@ train:
     version: '0.1'
     normalize: true  # Input is [0,1], needs conversion to [-1,1]
     reduction: mean
+    start_iter: 0  # Start immediately (default behavior)
 
   # 3. Feature Matching Loss from Discriminator 2 (CIPLAB)
   feature_matching_opt:

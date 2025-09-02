@@ -182,10 +182,14 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                     normalize=lpips_opt.get('normalize', True),
                     reduction=lpips_opt.get('reduction', 'mean')
                 ).to(self.device)
+                # Store the start iteration for LPIPS
+                self.lpips_start_iter = lpips_opt.get('start_iter', 0)
                 logger.info(f"LPIPS Loss initialized with weight {lpips_opt.get('loss_weight', 1.0)} "
-                           f"using {lpips_opt.get('net_type', 'alex')} network")
+                           f"using {lpips_opt.get('net_type', 'alex')} network, "
+                           f"starting at iteration {self.lpips_start_iter}")
             else:
                 self.cri_lpips = None
+                self.lpips_start_iter = float('inf')  # Never start if not configured
             
             # Initialize Focal Frequency Loss if configured
             if train_opt.get('focal_freq_opt'):
@@ -558,7 +562,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 loss_dict['l_fdl'] = l_fdl
             
             # LPIPS perceptual loss - human-calibrated
-            if hasattr(self, 'cri_lpips') and self.cri_lpips:
+            if hasattr(self, 'cri_lpips') and self.cri_lpips and current_iter >= self.lpips_start_iter:
                 # Reshape 5D video tensors to 4D for LPIPS loss
                 if self.output.dim() == 5:
                     b, t, c, h, w = self.output.shape
