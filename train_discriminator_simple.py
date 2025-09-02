@@ -210,17 +210,25 @@ def train_discriminator(args):
     
     # Initialize wandb
     if args.use_wandb:
+        config = {
+            "learning_rate": args.lr,
+            "batch_size": args.batch_size,
+            "epochs": args.epochs,
+            "base_channels": args.base_channels,
+            "num_layers": args.num_layers,
+            "patch_size": args.patch_size,
+        }
+        # Add CIPLAB-specific configs
+        if args.arch == 'ciplab':
+            config.update({
+                "lq_weight": args.lq_weight,
+                "gt_weight": args.gt_weight,
+                "train_lq_only": args.train_lq_only,
+            })
         wandb.init(
             project=args.wandb_project,
             name=args.wandb_name or f"disc_lr{args.lr}_bs{args.batch_size}",
-            config={
-                "learning_rate": args.lr,
-                "batch_size": args.batch_size,
-                "epochs": args.epochs,
-                "base_channels": args.base_channels,
-                "num_layers": args.num_layers,
-                "patch_size": args.patch_size,
-            },
+            config=config,
             resume="allow"  # Allow resuming wandb runs
         )
     
@@ -256,6 +264,16 @@ def train_discriminator(args):
         raise ValueError(f"Unknown architecture: {args.arch}")
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # Print CIPLAB-specific training config
+    if args.arch == 'ciplab':
+        print(f"\nCIPLAB Training Configuration:")
+        if args.train_lq_only:
+            print(f"  Training mode: LQ images only")
+        else:
+            print(f"  Training mode: LQ and GT images")
+            print(f"  LQ loss weight: {args.lq_weight}")
+            print(f"  GT loss weight: {args.gt_weight}")
     
     # Create dataset
     dataset = PreGeneratedDataset(
@@ -367,6 +385,17 @@ def train_discriminator(args):
         if 'scheduler_state_dict' in checkpoint and scheduler is not None:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
+        # Restore RNG states for reproducibility
+        if 'rng_state' in checkpoint:
+            torch.set_rng_state(checkpoint['rng_state'])
+            print("Restored PyTorch RNG state")
+        if 'cuda_rng_state' in checkpoint and checkpoint['cuda_rng_state'] is not None:
+            torch.cuda.set_rng_state(checkpoint['cuda_rng_state'])
+            print("Restored CUDA RNG state")
+        if 'numpy_rng_state' in checkpoint:
+            np.random.set_state(checkpoint['numpy_rng_state'])
+            print("Restored NumPy RNG state")
+        
         print(f"Resumed with best_val_loss: {best_val_loss:.4f}")
     
     # Training loop
@@ -377,8 +406,13 @@ def train_discriminator(args):
         # Training phase
         model.train()
         train_loss = 0
-        train_loss_lq = 0  # Track LQ loss for CIPLAB
-        train_loss_gt = 0  # Track GT loss for CIPLAB
+        train_loss_fake = 0  # Track fake loss for CIPLAB (score < 0.9)
+        train_loss_real = 0  # Track real loss for CIPLAB (score >= 0.9 + GT)
+        
+        # Counters for sample types (CIPLAB only)
+        total_lq_samples = 0
+        total_hq_samples = 0
+        total_gt_samples = 0
         
         with tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]") as pbar:
             for batch_idx, batch in enumerate(pbar):
@@ -388,27 +422,61 @@ def train_discriminator(args):
             
                 # Forward pass
                 if args.arch == 'ciplab':
-                    # CIPLAB expects single images, not concatenated
-                    # Process generated and GT separately
-                    gen_e, gen_d = model(generated)
-                    gt_e, gt_d = model(gt)
-                    # Reduce spatial dimensions to get single scores
-                    # Encoder output is small (2x2), decoder is full resolution (128x128)
-                    gen_e_score = gen_e.mean(dim=[2, 3], keepdim=True)  # Average over spatial dims
-                    gen_d_score = gen_d.mean(dim=[2, 3], keepdim=True)
-                    gt_e_score = gt_e.mean(dim=[2, 3], keepdim=True)
-                    gt_d_score = gt_d.mean(dim=[2, 3], keepdim=True)
-                    # Average the encoder and decoder outputs
-                    predicted_logits = (gen_e_score + gen_d_score) / 2
-                    gt_logits = (gt_e_score + gt_d_score) / 2
-                    # For training, we want generated to score low and GT to score high
-                    # Combine both objectives
-                    predicted_scores = torch.sigmoid(predicted_logits)
-                    gt_scores = torch.sigmoid(gt_logits)
-                    # Calculate losses separately for tracking
-                    loss_lq = criterion(predicted_scores.squeeze(), target_scores.squeeze()) * 50
-                    loss_gt = criterion(gt_scores.squeeze(), torch.ones_like(target_scores).squeeze()) * 50
-                    loss = loss_lq + loss_gt
+                    # CIPLAB uses binary classification with hinge loss
+                    # Split samples based on quality threshold
+                    quality_threshold = 0.9
+                    high_quality_mask = target_scores.squeeze() >= quality_threshold
+                    low_quality_mask = ~high_quality_mask
+                    
+                    # Count sample types for logging
+                    num_hq = high_quality_mask.sum().item()
+                    num_lq = low_quality_mask.sum().item()
+                    num_gt = len(target_scores) if not args.train_lq_only else 0
+                    
+                    total_hq_samples += num_hq
+                    total_lq_samples += num_lq
+                    total_gt_samples += num_gt
+                    
+                    # Hinge loss for binary classification
+                    def hinge_loss(logits, is_real):
+                        if is_real:
+                            return torch.nn.functional.relu(1 - logits)
+                        else:
+                            return torch.nn.functional.relu(1 + logits)
+                    
+                    # Collect all REAL samples (HQ generated + GT)
+                    real_images = []
+                    if high_quality_mask.any():
+                        real_images.append(generated[high_quality_mask])
+                    if not args.train_lq_only:
+                        real_images.append(gt)
+                    
+                    # Process REAL samples (HQ + GT together)
+                    if real_images:
+                        real_batch = torch.cat(real_images, dim=0)
+                        real_e, real_d = model(real_batch)
+                        real_e_score = real_e.mean(dim=[2, 3])
+                        real_d_score = real_d.mean(dim=[2, 3])
+                        loss_real_e = hinge_loss(real_e_score, is_real=True).mean()
+                        loss_real_d = hinge_loss(real_d_score, is_real=True).mean()
+                        loss_real = loss_real_e + loss_real_d
+                    else:
+                        loss_real = torch.tensor(0.0).to(device)
+                    
+                    # Process FAKE samples (LQ only)
+                    if low_quality_mask.any():
+                        fake_batch = generated[low_quality_mask]
+                        fake_e, fake_d = model(fake_batch)
+                        fake_e_score = fake_e.mean(dim=[2, 3])
+                        fake_d_score = fake_d.mean(dim=[2, 3])
+                        loss_fake_e = hinge_loss(fake_e_score, is_real=False).mean()
+                        loss_fake_d = hinge_loss(fake_d_score, is_real=False).mean()
+                        loss_fake = loss_fake_e + loss_fake_d
+                    else:
+                        loss_fake = torch.tensor(0.0).to(device)
+                    
+                    # Combine losses with weights
+                    loss = loss_fake * args.lq_weight + loss_real * args.gt_weight
                 else:
                     predicted_logits = model(generated, gt)
                     # Apply sigmoid to get probabilities for regression
@@ -440,14 +508,25 @@ def train_discriminator(args):
                 # Update metrics
                 train_loss += loss.item()
                 if args.arch == 'ciplab':
-                    train_loss_lq += loss_lq.item()
-                    train_loss_gt += loss_gt.item()
+                    train_loss_fake += loss_fake.item()
+                    train_loss_real += loss_real.item()
                 global_iteration += 1
                 if args.arch == 'ciplab':
                     pbar.set_postfix({'loss': f"{loss.item():.4f}", 
-                                    'loss_lq': f"{loss_lq.item():.4f}",
-                                    'loss_gt': f"{loss_gt.item():.4f}",
+                                    'loss_fake': f"{loss_fake.item():.4f}",
+                                    'loss_real': f"{loss_real.item():.4f}",
                                     'iter': global_iteration})
+                    
+                    # Log sample counts every 100 batches
+                    if (batch_idx + 1) % 100 == 0:
+                        print(f"\n  Sample distribution (last {(batch_idx + 1)} batches):")
+                        print(f"    LQ samples (score < 0.9): {total_lq_samples}")
+                        print(f"    HQ samples (score >= 0.9): {total_hq_samples}")
+                        if not args.train_lq_only:
+                            print(f"    GT samples: {total_gt_samples}")
+                        total_samples = total_lq_samples + total_hq_samples
+                        if total_samples > 0:
+                            print(f"    HQ ratio: {total_hq_samples/total_samples:.2%}")
                 else:
                     pbar.set_postfix({'loss': f"{loss.item():.4f}", 'iter': global_iteration})
                 
@@ -461,8 +540,11 @@ def train_discriminator(args):
                     # Add CIPLAB-specific losses
                     if args.arch == 'ciplab':
                         log_dict.update({
-                            'train/loss_lq': loss_lq.item(),
-                            'train/loss_gt': loss_gt.item(),
+                            'train/loss_fake': loss_fake.item(),
+                            'train/loss_real': loss_real.item(),
+                            'train/num_lq_batch': num_lq,
+                            'train/num_hq_batch': num_hq,
+                            'train/num_gt_batch': num_gt,
                         })
                     # Only add worst prediction info if not CIPLAB and on logging interval
                     elif batch_idx % 100 == 0:
@@ -482,7 +564,11 @@ def train_discriminator(args):
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'loss': loss.item(),
-                        'best_val_loss': best_val_loss
+                        'best_val_loss': best_val_loss,
+                        # Save RNG states for reproducibility
+                        'rng_state': torch.get_rng_state(),
+                        'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                        'numpy_rng_state': np.random.get_state(),
                     }
                     if scheduler is not None:
                         iter_checkpoint['scheduler_state_dict'] = scheduler.state_dict()
@@ -493,8 +579,8 @@ def train_discriminator(args):
         
         avg_train_loss = train_loss / len(train_loader)
         if args.arch == 'ciplab':
-            avg_train_loss_lq = train_loss_lq / len(train_loader)
-            avg_train_loss_gt = train_loss_gt / len(train_loader)
+            avg_train_loss_fake = train_loss_fake / len(train_loader)
+            avg_train_loss_real = train_loss_real / len(train_loader)
         
         if not args.no_val:
             # Validation phase
@@ -511,18 +597,28 @@ def train_discriminator(args):
                         if args.arch == 'ciplab':
                             # CIPLAB validation
                             gen_e, gen_d = model(generated)
-                            gt_e, gt_d = model(gt)
                             # Reduce spatial dimensions
                             gen_e_score = gen_e.mean(dim=[2, 3], keepdim=True)
                             gen_d_score = gen_d.mean(dim=[2, 3], keepdim=True)
-                            gt_e_score = gt_e.mean(dim=[2, 3], keepdim=True)
-                            gt_d_score = gt_d.mean(dim=[2, 3], keepdim=True)
                             predicted_logits = (gen_e_score + gen_d_score) / 2
-                            gt_logits = (gt_e_score + gt_d_score) / 2
                             predicted_scores = torch.sigmoid(predicted_logits)
-                            gt_scores = torch.sigmoid(gt_logits)
-                            loss = (criterion(predicted_scores.squeeze(), target_scores.squeeze()) + 
-                                   criterion(gt_scores.squeeze(), torch.ones_like(target_scores).squeeze())) * 50
+                            
+                            # Calculate losses same way as training
+                            loss_lq = criterion(predicted_scores.squeeze(), target_scores.squeeze()) * 50
+                            
+                            if not args.train_lq_only:
+                                gt_e, gt_d = model(gt)
+                                gt_e_score = gt_e.mean(dim=[2, 3], keepdim=True)
+                                gt_d_score = gt_d.mean(dim=[2, 3], keepdim=True)
+                                gt_logits = (gt_e_score + gt_d_score) / 2
+                                gt_scores = torch.sigmoid(gt_logits)
+                                loss_gt = criterion(gt_scores.squeeze(), torch.ones_like(target_scores).squeeze()) * 50
+                            else:
+                                loss_gt = torch.tensor(0.0).to(device)
+                            
+                            loss = loss_lq * args.lq_weight
+                            if not args.train_lq_only:
+                                loss = loss + loss_gt * args.gt_weight
                         else:
                             predicted_logits = model(generated, gt)
                             # Apply sigmoid to get probabilities for regression
@@ -556,8 +652,14 @@ def train_discriminator(args):
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'train_loss': avg_train_loss,
-                    'val_loss': avg_val_loss
+                    'val_loss': avg_val_loss,
+                    # Save RNG states
+                    'rng_state': torch.get_rng_state(),
+                    'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                    'numpy_rng_state': np.random.get_state(),
                 }
+                if scheduler is not None:
+                    checkpoint['scheduler_state_dict'] = scheduler.state_dict()
                 save_path = f"{args.save_dir}/discriminator_best.pth"
                 os.makedirs(args.save_dir, exist_ok=True)
                 torch.save(checkpoint, save_path)
@@ -568,7 +670,7 @@ def train_discriminator(args):
         else:
             # No validation - just print train loss
             if args.arch == 'ciplab':
-                print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f} (LQ: {avg_train_loss_lq:.4f}, GT: {avg_train_loss_gt:.4f})")
+                print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f} (Fake: {avg_train_loss_fake:.4f}, Real: {avg_train_loss_real:.4f})")
             else:
                 print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}")
             
@@ -580,8 +682,8 @@ def train_discriminator(args):
                 }
                 if args.arch == 'ciplab':
                     log_dict.update({
-                        'train/loss_lq_epoch': avg_train_loss_lq,
-                        'train/loss_gt_epoch': avg_train_loss_gt,
+                        'train/loss_fake_epoch': avg_train_loss_fake,
+                        'train/loss_real_epoch': avg_train_loss_real,
                     })
                 wandb.log(log_dict)
             
@@ -592,8 +694,14 @@ def train_discriminator(args):
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'train_loss': avg_train_loss
+                    'train_loss': avg_train_loss,
+                    # Save RNG states
+                    'rng_state': torch.get_rng_state(),
+                    'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                    'numpy_rng_state': np.random.get_state(),
                 }
+                if scheduler is not None:
+                    checkpoint['scheduler_state_dict'] = scheduler.state_dict()
                 save_path = f"{args.save_dir}/discriminator_best.pth"
                 os.makedirs(args.save_dir, exist_ok=True)
                 torch.save(checkpoint, save_path)
@@ -609,8 +717,14 @@ def train_discriminator(args):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': avg_train_loss,
-                'val_loss': avg_val_loss
+                'val_loss': avg_val_loss,
+                # Save RNG states
+                'rng_state': torch.get_rng_state(),
+                'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                'numpy_rng_state': np.random.get_state(),
             }
+            if scheduler is not None:
+                checkpoint['scheduler_state_dict'] = scheduler.state_dict()
             save_path = f"{args.save_dir}/discriminator_epoch_{epoch+1}.pth"
             torch.save(checkpoint, save_path)
             print(f"Saved checkpoint at epoch {epoch+1}")
@@ -659,6 +773,12 @@ def main():
     parser.add_argument('--patch_size', type=int, default=128, help='Patch size for training')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--lq_weight', type=float, default=1.0,
+                        help='Loss weight for fake samples (score < 0.9) (CIPLAB only)')
+    parser.add_argument('--gt_weight', type=float, default=1.0,
+                        help='Loss weight for real samples (score >= 0.9 and GT) (CIPLAB only)')
+    parser.add_argument('--train_lq_only', action='store_true',
+                        help='Train only on LQ images, ignore GT (CIPLAB only)')
     parser.add_argument('--val_split', type=float, default=0.1, 
                         help='Validation split ratio')
     parser.add_argument('--no_val', action='store_true',
