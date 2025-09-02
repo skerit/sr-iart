@@ -7,6 +7,7 @@ import sys
 import cv2
 import numpy as np
 from collections import OrderedDict
+from copy import deepcopy
 import torchvision
 from torch.amp import autocast
 from torch.nn.parallel import DataParallel, DistributedDataParallel
@@ -51,9 +52,7 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
             # Load pretrained discriminator if available
             load_path = self.opt['path'].get('pretrain_network_d', None)
             if load_path:
-                param_key = self.opt['path'].get('param_key_d', 'params')
-                self.load_network(self.net_d, load_path, 
-                                self.opt['path'].get('strict_load_d', True), param_key)
+                self._load_discriminator_network(load_path)
         else:
             self.use_discriminator = False
             
@@ -284,6 +283,41 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 self.net_d_init_iters = train_opt.get('net_d_init_iters', 0)
                 self.perceptual_start_iter = train_opt.get('perceptual_start_iter', 75000)
                 logger.info(f"Discriminator training starts at iteration {self.perceptual_start_iter}")
+    
+    def _load_discriminator_network(self, load_path):
+        """Helper method to load discriminator network with flexible checkpoint format handling."""
+        logger = get_root_logger()
+        param_key = self.opt['path'].get('param_key_d', 'params')
+        strict = self.opt['path'].get('strict_load_d', True)
+        
+        # First, load the checkpoint to check its structure
+        checkpoint = torch.load(load_path, map_location=lambda storage, loc: storage)
+        
+        # Check if it's a direct state_dict or has the expected structure
+        if isinstance(checkpoint, dict):
+            # Check if it has the param_key
+            if param_key in checkpoint:
+                # Standard format, use normal loading
+                self.load_network(self.net_d, load_path, strict, param_key)
+            elif 'params' in checkpoint and param_key != 'params':
+                # Has 'params' but we're looking for a different key
+                logger.warning(f"Expected key '{param_key}' not found, but 'params' exists. Using 'params' instead.")
+                self.load_network(self.net_d, load_path, strict, 'params')
+            else:
+                # It's likely a direct state_dict, load it directly
+                logger.info(f"Loading discriminator as direct state_dict from {load_path}")
+                net = self.get_bare_model(self.net_d)
+                # Remove 'module.' prefix if present
+                for k, v in deepcopy(checkpoint).items():
+                    if k.startswith('module.'):
+                        checkpoint[k[7:]] = v
+                        checkpoint.pop(k)
+                net.load_state_dict(checkpoint, strict=strict)
+        else:
+            # Not a dict, might be an OrderedDict or direct tensor storage
+            logger.info(f"Loading discriminator from non-dict checkpoint at {load_path}")
+            net = self.get_bare_model(self.net_d)
+            net.load_state_dict(checkpoint, strict=strict)
     
     def feed_data(self, data):
         """Override feed_data to store current batch info for logging."""
