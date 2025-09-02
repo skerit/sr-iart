@@ -1,6 +1,7 @@
 """Simple discriminator training using pre-generated dataset."""
 
 import os
+import sys
 import json
 import torch
 import torch.nn as nn
@@ -15,6 +16,7 @@ import wandb
 
 from archs.concat_discriminator import ConcatDiscriminator
 from archs.patch_discriminator import PatchSharpnessDiscriminator, MultiScalePatchDiscriminator, LocalPatchDiscriminator
+from archs.ciplab_discriminator_arch import CIPLABUnetD
 
 
 class PreGeneratedDataset(Dataset):
@@ -145,8 +147,66 @@ class PreGeneratedDataset(Dataset):
         }
 
 
+def detect_architecture_from_checkpoint(checkpoint_path):
+    """Detect discriminator architecture from checkpoint."""
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Get state dict - BasicSR uses 'params' key
+    if 'params' in checkpoint:
+        state_dict = checkpoint['params']
+    elif 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+    
+    # Detect architecture based on layer names
+    keys = list(state_dict.keys())
+    
+    if 'enc_b1.conv1.weight' in keys or 'enc_b1.0.weight' in keys:
+        # CIPLAB discriminator
+        return 'ciplab', {'base_channels': 64}  # CIPLAB has fixed architecture
+    elif 'initial.0.weight' in keys:
+        # Concat discriminator
+        base_channels = state_dict['initial.0.weight'].shape[0]
+        return 'concat', {'base_channels': base_channels}
+    elif 'conv_blocks.0.0.weight' in keys:
+        # Patch discriminator
+        base_channels = state_dict['conv_blocks.0.0.weight'].shape[0]
+        return 'patch', {'base_channels': base_channels}
+    elif 'scale_0.conv_blocks.0.0.weight' in keys:
+        # MultiScale discriminator
+        base_channels = state_dict['scale_0.conv_blocks.0.0.weight'].shape[0]
+        return 'multiscale', {'base_channels': base_channels}
+    elif 'conv1.weight' in keys:
+        # Local discriminator
+        base_channels = state_dict['conv1.weight'].shape[0]
+        return 'local', {'base_channels': base_channels}
+    else:
+        print(f"Unable to detect architecture from checkpoint {checkpoint_path}")
+        print(f"Found keys: {keys[:5]}...")
+        raise ValueError(f"Unknown architecture in checkpoint {checkpoint_path}")
+
+
 def train_discriminator(args):
     """Train the discriminator."""
+    
+    # Auto-detect architecture if resuming
+    if args.resume and os.path.exists(args.resume):
+        detected_arch, arch_params = detect_architecture_from_checkpoint(args.resume)
+        if args.arch is None:
+            print(f"Auto-detected architecture: {detected_arch} with params {arch_params}")
+            args.arch = detected_arch
+            # Update architecture-specific parameters
+            for key, value in arch_params.items():
+                if not hasattr(args, key) or getattr(args, key) is None:
+                    setattr(args, key, value)
+        else:
+            print(f"Using specified architecture: {args.arch} (detected: {detected_arch})")
+    elif args.arch is None:
+        print("Error: --arch must be specified when not resuming from checkpoint")
+        sys.exit(1)
     
     # Initialize wandb
     if args.use_wandb:
@@ -190,6 +250,8 @@ def train_discriminator(args):
             in_channels=6,
             base_channels=args.base_channels
         ).to(device)
+    elif args.arch == 'ciplab':
+        model = CIPLABUnetD().to(device)  # CIPLAB has fixed architecture, no parameters
     else:
         raise ValueError(f"Unknown architecture: {args.arch}")
     
@@ -262,9 +324,28 @@ def train_discriminator(args):
         print(f"Resuming from checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
         
-        # Load model state
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # Load model state - handle different checkpoint formats
+        if 'params' in checkpoint:
+            # BasicSR format (from GAN training)
+            model.load_state_dict(checkpoint['params'])
+            print("Loaded model from BasicSR checkpoint (params)")
+        elif 'model_state_dict' in checkpoint:
+            # Our discriminator training format
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print("Loaded model from discriminator training checkpoint")
+        elif 'state_dict' in checkpoint:
+            # Alternative format
+            model.load_state_dict(checkpoint['state_dict'])
+            print("Loaded model from state_dict")
+        else:
+            # Assume checkpoint is the state dict itself
+            model.load_state_dict(checkpoint)
+            print("Loaded model directly from checkpoint")
+        
+        # Try to load optimizer if available (may not exist in BasicSR checkpoints)
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print("Loaded optimizer state")
         
         # Restore training state
         if 'iteration' in checkpoint:
@@ -296,6 +377,8 @@ def train_discriminator(args):
         # Training phase
         model.train()
         train_loss = 0
+        train_loss_lq = 0  # Track LQ loss for CIPLAB
+        train_loss_gt = 0  # Track GT loss for CIPLAB
         
         with tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]") as pbar:
             for batch_idx, batch in enumerate(pbar):
@@ -304,14 +387,37 @@ def train_discriminator(args):
                 target_scores = batch['target_score'].to(device)
             
                 # Forward pass
-                predicted_logits = model(generated, gt)
-                # Apply sigmoid to get probabilities for regression
-                predicted_scores = torch.sigmoid(predicted_logits)
-                # Scale loss by 100 to get more reasonable gradients
-                loss = criterion(predicted_scores, target_scores) * 100
+                if args.arch == 'ciplab':
+                    # CIPLAB expects single images, not concatenated
+                    # Process generated and GT separately
+                    gen_e, gen_d = model(generated)
+                    gt_e, gt_d = model(gt)
+                    # Reduce spatial dimensions to get single scores
+                    # Encoder output is small (2x2), decoder is full resolution (128x128)
+                    gen_e_score = gen_e.mean(dim=[2, 3], keepdim=True)  # Average over spatial dims
+                    gen_d_score = gen_d.mean(dim=[2, 3], keepdim=True)
+                    gt_e_score = gt_e.mean(dim=[2, 3], keepdim=True)
+                    gt_d_score = gt_d.mean(dim=[2, 3], keepdim=True)
+                    # Average the encoder and decoder outputs
+                    predicted_logits = (gen_e_score + gen_d_score) / 2
+                    gt_logits = (gt_e_score + gt_d_score) / 2
+                    # For training, we want generated to score low and GT to score high
+                    # Combine both objectives
+                    predicted_scores = torch.sigmoid(predicted_logits)
+                    gt_scores = torch.sigmoid(gt_logits)
+                    # Calculate losses separately for tracking
+                    loss_lq = criterion(predicted_scores.squeeze(), target_scores.squeeze()) * 50
+                    loss_gt = criterion(gt_scores.squeeze(), torch.ones_like(target_scores).squeeze()) * 50
+                    loss = loss_lq + loss_gt
+                else:
+                    predicted_logits = model(generated, gt)
+                    # Apply sigmoid to get probabilities for regression
+                    predicted_scores = torch.sigmoid(predicted_logits)
+                    # Scale loss by 100 to get more reasonable gradients
+                    loss = criterion(predicted_scores, target_scores) * 100
                 
                 # Log worst predictions occasionally
-                if batch_idx % 100 == 0:
+                if batch_idx % 100 == 0 and args.arch != 'ciplab':
                     with torch.no_grad():
                         # predicted_scores already contains probabilities (after sigmoid)
                         errors = torch.abs(predicted_scores - target_scores)
@@ -333,19 +439,39 @@ def train_discriminator(args):
                 
                 # Update metrics
                 train_loss += loss.item()
+                if args.arch == 'ciplab':
+                    train_loss_lq += loss_lq.item()
+                    train_loss_gt += loss_gt.item()
                 global_iteration += 1
-                pbar.set_postfix({'loss': f"{loss.item():.4f}", 'iter': global_iteration})
+                if args.arch == 'ciplab':
+                    pbar.set_postfix({'loss': f"{loss.item():.4f}", 
+                                    'loss_lq': f"{loss_lq.item():.4f}",
+                                    'loss_gt': f"{loss_gt.item():.4f}",
+                                    'iter': global_iteration})
+                else:
+                    pbar.set_postfix({'loss': f"{loss.item():.4f}", 'iter': global_iteration})
                 
                 # Log to wandb
                 if args.use_wandb:
-                    wandb.log({
+                    log_dict = {
                         'train/loss': loss.item(),
-                        'train/worst_pred': worst_pred if batch_idx % 100 == 0 else None,
-                        'train/worst_target': worst_target if batch_idx % 100 == 0 else None,
-                        'train/worst_error': worst_error if batch_idx % 100 == 0 else None,
                         'train/epoch': epoch + 1,
                         'iteration': global_iteration,
-                    })
+                    }
+                    # Add CIPLAB-specific losses
+                    if args.arch == 'ciplab':
+                        log_dict.update({
+                            'train/loss_lq': loss_lq.item(),
+                            'train/loss_gt': loss_gt.item(),
+                        })
+                    # Only add worst prediction info if not CIPLAB and on logging interval
+                    elif batch_idx % 100 == 0:
+                        log_dict.update({
+                            'train/worst_pred': worst_pred,
+                            'train/worst_target': worst_target,
+                            'train/worst_error': worst_error,
+                        })
+                    wandb.log(log_dict)
                 
                 # Save checkpoint every N iterations
                 if global_iteration % args.save_iter == 0:
@@ -366,6 +492,9 @@ def train_discriminator(args):
                     print(f"\nSaved iteration checkpoint at iteration {global_iteration}")
         
         avg_train_loss = train_loss / len(train_loader)
+        if args.arch == 'ciplab':
+            avg_train_loss_lq = train_loss_lq / len(train_loader)
+            avg_train_loss_gt = train_loss_gt / len(train_loader)
         
         if not args.no_val:
             # Validation phase
@@ -379,11 +508,27 @@ def train_discriminator(args):
                         gt = batch['gt'].to(device)
                         target_scores = batch['target_score'].to(device)
                         
-                        predicted_logits = model(generated, gt)
-                        # Apply sigmoid to get probabilities for regression
-                        predicted_scores = torch.sigmoid(predicted_logits)
-                        # Scale loss by 100 to match training
-                        loss = criterion(predicted_scores, target_scores) * 100
+                        if args.arch == 'ciplab':
+                            # CIPLAB validation
+                            gen_e, gen_d = model(generated)
+                            gt_e, gt_d = model(gt)
+                            # Reduce spatial dimensions
+                            gen_e_score = gen_e.mean(dim=[2, 3], keepdim=True)
+                            gen_d_score = gen_d.mean(dim=[2, 3], keepdim=True)
+                            gt_e_score = gt_e.mean(dim=[2, 3], keepdim=True)
+                            gt_d_score = gt_d.mean(dim=[2, 3], keepdim=True)
+                            predicted_logits = (gen_e_score + gen_d_score) / 2
+                            gt_logits = (gt_e_score + gt_d_score) / 2
+                            predicted_scores = torch.sigmoid(predicted_logits)
+                            gt_scores = torch.sigmoid(gt_logits)
+                            loss = (criterion(predicted_scores.squeeze(), target_scores.squeeze()) + 
+                                   criterion(gt_scores.squeeze(), torch.ones_like(target_scores).squeeze())) * 50
+                        else:
+                            predicted_logits = model(generated, gt)
+                            # Apply sigmoid to get probabilities for regression
+                            predicted_scores = torch.sigmoid(predicted_logits)
+                            # Scale loss by 100 to match training
+                            loss = criterion(predicted_scores, target_scores) * 100
                         
                         val_loss += loss.item()
                         pbar.set_postfix({'loss': f"{loss.item():.4f}"})
@@ -422,14 +567,23 @@ def train_discriminator(args):
                     wandb.log({'val/best_loss': avg_val_loss})
         else:
             # No validation - just print train loss
-            print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}")
+            if args.arch == 'ciplab':
+                print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f} (LQ: {avg_train_loss_lq:.4f}, GT: {avg_train_loss_gt:.4f})")
+            else:
+                print(f"Epoch {epoch+1} - Train Loss: {avg_train_loss:.4f}")
             
             # Log to wandb
             if args.use_wandb:
-                wandb.log({
+                log_dict = {
                     'train/loss_epoch': avg_train_loss,
                     'epoch': epoch + 1,
-                })
+                }
+                if args.arch == 'ciplab':
+                    log_dict.update({
+                        'train/loss_lq_epoch': avg_train_loss_lq,
+                        'train/loss_gt_epoch': avg_train_loss_gt,
+                    })
+                wandb.log(log_dict)
             
             # Save best model based on train loss
             if avg_train_loss < best_val_loss:
@@ -490,9 +644,9 @@ def main():
     parser.add_argument('dataset_dir', type=str, help='Directory containing dataset images')
     
     # Model arguments
-    parser.add_argument('--arch', type=str, default='patch',
-                        choices=['concat', 'patch', 'multiscale', 'local'],
-                        help='Discriminator architecture (patch recommended)')
+    parser.add_argument('--arch', type=str, default=None,
+                        choices=['concat', 'patch', 'multiscale', 'local', 'ciplab'],
+                        help='Discriminator architecture (auto-detected from checkpoint if resuming)')
     parser.add_argument('--base_channels', type=int, default=64, 
                         help='Base number of channels')
     parser.add_argument('--num_layers', type=int, default=4, 
