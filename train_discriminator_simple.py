@@ -289,185 +289,81 @@ def train_discriminator(args):
         print(f"Resumed with best_val_loss: {best_val_loss:.4f}")
     
     # Training loop
-    avg_train_loss = 0.0  # Initialize for seamless epochs mode
+    avg_train_loss = 0.0
     avg_val_loss = float('inf') if args.no_val else 0.0  # Initialize to prevent NameError
-    
-    if args.seamless_epochs:
-        # Create a single continuous iterator for all epochs
-        total_iterations = len(train_loader) * args.epochs
-        print(f"Training for {total_iterations} total iterations ({args.epochs} epochs)")
+
+    for epoch in range(start_epoch, args.epochs):
+        # Training phase
+        model.train()
+        train_loss = 0
         
-        epoch = start_epoch
-        iteration_in_epoch = start_iteration % len(train_loader) if start_iteration > 0 else 0
-        
-        # Skip already completed iterations
-        if start_iteration > 0:
-            print(f"Skipping {start_iteration} iterations to resume training")
-        
-        with tqdm(total=total_iterations, initial=start_iteration, desc="Training") as pbar:
-            for _ in range(args.epochs):
-                for batch_idx, batch in enumerate(train_loader):
-                    # Skip iterations if resuming
-                    if global_iteration < start_iteration:
-                        global_iteration += 1
-                        continue
-                    
-                    generated = batch['generated'].to(device)
-                    gt = batch['gt'].to(device)
-                    target_scores = batch['target_score'].to(device)
-                    
-                    # Forward pass
-                    predicted_logits = model(generated, gt)
-                    # Apply sigmoid to get probabilities for regression
-                    predicted_scores = torch.sigmoid(predicted_logits)
-                    # Scale loss by 100 to get more reasonable gradients
-                    loss = criterion(predicted_scores, target_scores) * 100
-                    
-                    # Log worst predictions occasionally
-                    if global_iteration % 100 == 0:
-                        with torch.no_grad():
-                            # predicted_scores already contains probabilities (after sigmoid)
-                            errors = torch.abs(predicted_scores - target_scores)
-                        max_error_idx = torch.argmax(errors)
-                        worst_pred = predicted_scores[max_error_idx].item()
-                        worst_target = target_scores[max_error_idx].item()
-                        worst_error = errors[max_error_idx].item()
-                        if worst_error > 0.3:
-                            print(f"\n  WARNING: Large error! Predicted: {worst_pred:.3f}, Target: {worst_target:.3f}, Error: {worst_error:.3f}")
-                    
-                    # Backward pass
-                    optimizer.zero_grad()
-                    loss.backward()
-                    
-                    # Gradient clipping for stability with high learning rate
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    
-                    optimizer.step()
-                    
-                    # Update metrics
-                    global_iteration += 1
-                    iteration_in_epoch += 1
-                    pbar.update(1)
-                    pbar.set_postfix({'loss': f"{loss.item():.4f}", 'epoch': epoch+1})
-                    
-                    # Log to wandb
-                    if args.use_wandb:
-                        wandb.log({
-                            'train/loss': loss.item(),
-                            'train/worst_pred': worst_pred if global_iteration % 100 == 0 else None,
-                            'train/worst_target': worst_target if global_iteration % 100 == 0 else None,
-                            'train/worst_error': worst_error if global_iteration % 100 == 0 else None,
-                            'train/epoch': epoch + 1,
-                            'iteration': global_iteration,
-                        })
-                    
-                    # Save checkpoint every N iterations
-                    if global_iteration % args.save_iter == 0:
-                        iter_checkpoint = {
-                            'iteration': global_iteration,
-                            'epoch': epoch,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': loss.item(),
-                            'best_val_loss': best_val_loss
-                        }
-                        if scheduler is not None:
-                            iter_checkpoint['scheduler_state_dict'] = scheduler.state_dict()
-                        iter_save_path = f"{args.save_dir}/discriminator_iter_{global_iteration}.pth"
-                        os.makedirs(args.save_dir, exist_ok=True)
-                        torch.save(iter_checkpoint, iter_save_path)
-                        print(f"\nSaved iteration checkpoint at iteration {global_iteration}")
-                    
-                    # Check if epoch completed
-                    if iteration_in_epoch >= len(train_loader):
-                        epoch += 1
-                        iteration_in_epoch = 0
-                        
-                        # Save epoch checkpoint
-                        if epoch % args.save_freq == 0:
-                            checkpoint = {
-                                'epoch': epoch,
-                                'model_state_dict': model.state_dict(),
-                                'optimizer_state_dict': optimizer.state_dict(),
-                                'loss': loss.item()
-                            }
-                            save_path = f"{args.save_dir}/discriminator_epoch_{epoch}.pth"
-                            torch.save(checkpoint, save_path)
-                            print(f"\nSaved epoch checkpoint at epoch {epoch}")
-    else:
-        # Original epoch-based training
-        for epoch in range(start_epoch, args.epochs):
-            # Training phase
-            model.train()
-            train_loss = 0
+        with tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]") as pbar:
+            for batch_idx, batch in enumerate(pbar):
+                generated = batch['generated'].to(device)
+                gt = batch['gt'].to(device)
+                target_scores = batch['target_score'].to(device)
             
-            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]") as pbar:
-                for batch_idx, batch in enumerate(pbar):
-                    generated = batch['generated'].to(device)
-                    gt = batch['gt'].to(device)
-                    target_scores = batch['target_score'].to(device)
+                # Forward pass
+                predicted_logits = model(generated, gt)
+                # Apply sigmoid to get probabilities for regression
+                predicted_scores = torch.sigmoid(predicted_logits)
+                # Scale loss by 100 to get more reasonable gradients
+                loss = criterion(predicted_scores, target_scores) * 100
                 
-                    # Forward pass
-                    predicted_logits = model(generated, gt)
-                    # Apply sigmoid to get probabilities for regression
-                    predicted_scores = torch.sigmoid(predicted_logits)
-                    # Scale loss by 100 to get more reasonable gradients
-                    loss = criterion(predicted_scores, target_scores) * 100
-                    
-                    # Log worst predictions occasionally
-                    if batch_idx % 100 == 0:
-                        with torch.no_grad():
-                            # predicted_scores already contains probabilities (after sigmoid)
-                            errors = torch.abs(predicted_scores - target_scores)
-                        max_error_idx = torch.argmax(errors)
-                        worst_pred = predicted_scores[max_error_idx].item()
-                        worst_target = target_scores[max_error_idx].item()
-                        worst_error = errors[max_error_idx].item()
-                        if worst_error > 0.3:
-                            print(f"\n  WARNING: Large error! Predicted: {worst_pred:.3f}, Target: {worst_target:.3f}, Error: {worst_error:.3f}")
-                    
-                    # Backward pass
-                    optimizer.zero_grad()
-                    loss.backward()
-                    
-                    # Gradient clipping for stability with high learning rate
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    
-                    optimizer.step()
-                    
-                    # Update metrics
-                    train_loss += loss.item()
-                    global_iteration += 1
-                    pbar.set_postfix({'loss': f"{loss.item():.4f}", 'iter': global_iteration})
-                    
-                    # Log to wandb
-                    if args.use_wandb:
-                        wandb.log({
-                            'train/loss': loss.item(),
-                            'train/worst_pred': worst_pred if batch_idx % 100 == 0 else None,
-                            'train/worst_target': worst_target if batch_idx % 100 == 0 else None,
-                            'train/worst_error': worst_error if batch_idx % 100 == 0 else None,
-                            'train/epoch': epoch + 1,
-                            'iteration': global_iteration,
-                        })
-                    
-                    # Save checkpoint every N iterations
-                    if global_iteration % args.save_iter == 0:
-                        iter_checkpoint = {
-                            'iteration': global_iteration,
-                            'epoch': epoch,
-                            'batch_idx': batch_idx,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': loss.item(),
-                            'best_val_loss': best_val_loss
-                        }
-                        if scheduler is not None:
-                            iter_checkpoint['scheduler_state_dict'] = scheduler.state_dict()
-                        iter_save_path = f"{args.save_dir}/discriminator_iter_{global_iteration}.pth"
-                        os.makedirs(args.save_dir, exist_ok=True)
-                        torch.save(iter_checkpoint, iter_save_path)
-                        print(f"\nSaved iteration checkpoint at iteration {global_iteration}")
+                # Log worst predictions occasionally
+                if batch_idx % 100 == 0:
+                    with torch.no_grad():
+                        # predicted_scores already contains probabilities (after sigmoid)
+                        errors = torch.abs(predicted_scores - target_scores)
+                    max_error_idx = torch.argmax(errors)
+                    worst_pred = predicted_scores[max_error_idx].item()
+                    worst_target = target_scores[max_error_idx].item()
+                    worst_error = errors[max_error_idx].item()
+                    if worst_error > 0.3:
+                        print(f"\n  WARNING: Large error! Predicted: {worst_pred:.3f}, Target: {worst_target:.3f}, Error: {worst_error:.3f}")
+                
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                
+                # Gradient clipping for stability with high learning rate
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                
+                # Update metrics
+                train_loss += loss.item()
+                global_iteration += 1
+                pbar.set_postfix({'loss': f"{loss.item():.4f}", 'iter': global_iteration})
+                
+                # Log to wandb
+                if args.use_wandb:
+                    wandb.log({
+                        'train/loss': loss.item(),
+                        'train/worst_pred': worst_pred if batch_idx % 100 == 0 else None,
+                        'train/worst_target': worst_target if batch_idx % 100 == 0 else None,
+                        'train/worst_error': worst_error if batch_idx % 100 == 0 else None,
+                        'train/epoch': epoch + 1,
+                        'iteration': global_iteration,
+                    })
+                
+                # Save checkpoint every N iterations
+                if global_iteration % args.save_iter == 0:
+                    iter_checkpoint = {
+                        'iteration': global_iteration,
+                        'epoch': epoch,
+                        'batch_idx': batch_idx,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss.item(),
+                        'best_val_loss': best_val_loss
+                    }
+                    if scheduler is not None:
+                        iter_checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+                    iter_save_path = f"{args.save_dir}/discriminator_iter_{global_iteration}.pth"
+                    os.makedirs(args.save_dir, exist_ok=True)
+                    torch.save(iter_checkpoint, iter_save_path)
+                    print(f"\nSaved iteration checkpoint at iteration {global_iteration}")
         
         avg_train_loss = train_loss / len(train_loader)
         
@@ -613,8 +509,6 @@ def main():
                         help='Validation split ratio')
     parser.add_argument('--no_val', action='store_true',
                         help='Disable validation (for ROCm compatibility)')
-    parser.add_argument('--seamless_epochs', action='store_true',
-                        help='No reset between epochs (for ROCm compatibility)')
     parser.add_argument('--num_workers', type=int, default=4, 
                         help='Number of data loading workers')
     parser.add_argument('--resume', type=str, default=None,
