@@ -304,6 +304,14 @@ class RecurrentMixPrecisionRTModel(VideoRecurrentModel):
                 logger.warning(f"Expected key '{param_key}' not found, but 'params' exists. Using 'params' instead.")
                 self.load_network(self.net_d, load_path, strict, 'params')
             else:
+                # Check for other common checkpoint formats
+                if 'model_state_dict' in checkpoint:
+                    logger.info(f"Found 'model_state_dict' in checkpoint, using it for discriminator")
+                    checkpoint = checkpoint['model_state_dict']
+                elif 'state_dict' in checkpoint:
+                    logger.info(f"Found 'state_dict' in checkpoint, using it for discriminator")
+                    checkpoint = checkpoint['state_dict']
+                
                 # It's likely a direct state_dict, load it directly
                 logger.info(f"Loading discriminator as direct state_dict from {load_path}")
                 net = self.get_bare_model(self.net_d)
